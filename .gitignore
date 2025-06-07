@@ -1,0 +1,8 @@
+.venv
+*__pycache__
+example/config/
+kuroboros.egg-info
+.DS_Info
+.vscode
+build/
+.coverage
