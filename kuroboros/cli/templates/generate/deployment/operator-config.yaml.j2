@@ -1,0 +1,12 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: operator-config
+  namespace: {{ name }}
+data:
+  operator.conf: |-
+    [operator]
+      name={{ name }}
+      {%- for key in config %}
+      {{ key }}={{ config[key] }}
+      {%- endfor %}

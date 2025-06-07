@@ -1,0 +1,88 @@
+{%- macro get_required(props_dict) %}
+{%- set reqs = [] %}
+{%- for prop_name in props_dict %}
+{%- if props_dict[prop_name].required %}
+{%- set _ = reqs.append(prop_name) %}
+{%- endif %}
+{%- endfor %}
+{%- if reqs | length > 0 %}
+required:
+{%- for req in reqs %}
+- {{ req | camel }}
+{%- endfor %}
+{%- else %}
+required: []
+{%- endif %}
+{%- endmacro %}
+
+
+{%- macro render_prop(name, prop) %}
+{{ name | camel }}:
+  type: {{ prop.typ }}
+  {%- if prop.typ == "array" %}
+  items:
+    type: {{ prop.subtype }}
+  {%- endif %}
+  {%- for key in prop.args %}
+  {{ key | camel }}: {{ prop.args[key] | yaml }}
+  {%- endfor %}
+  {%- if prop.subprops is not none %}
+  {{- get_required(prop.subprops) | indent(2) }}
+  properties:
+    {%- for subprop_name in prop.subprops %}
+  {{- render_prop(subprop_name, prop.subprops[subprop_name]) | indent(4) }}
+    {%- endfor %}
+  {%- endif %}
+{%- endmacro %}
+
+kind: CustomResourceDefinition
+apiVersion: apiextensions.k8s.io/v1
+metadata:
+  name: {{ gvi.crd_name }}
+spec:
+  group: {{ gvi.group }}
+  names:
+    kind: {{ gvi.kind }}
+    plural: {{ gvi.plural }}
+    {%- if gvi.short_names is none or gvi.short_names|length == 0 %}
+    shortNames: []
+    {%- else %}
+    shortNames:
+    {%- for short_name in gvi.short_names %}
+    - {{ short_name }}
+    {% endfor %}
+    {% endif %}
+    singular: {{ gvi.singular }}
+  scope: {{ gvi.scope }}
+  versions:
+  {%- for version in version_props %}
+  {%- set props = version_props[version].props %}
+  {%- set status = version_props[version].status %}
+  - name: {{ version }}
+    served: true
+    {%- if version == gvi.api_version %}
+    storage: true
+    {%- else %}
+    storage: false
+    {%- endif %}
+    subresources:
+      status: {}
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          {{- render_prop("status", status) | indent(10) }}
+          spec:
+            type: object
+            properties:
+            {%- for prop_name in props %}
+            {{- render_prop(prop_name, props[prop_name]) | indent(14) }}
+            {%- endfor %}
+            {{- get_required(props) | indent(12) }}
+  {%- endfor %}

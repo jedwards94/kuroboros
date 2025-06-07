@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ name }}
+  name: {{ name }}-deployment
+  namespace: {{ name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ name }}
+  template:
+    metadata:
+      labels:
+        app: {{ name }}
+    spec:
+      containers:
+      - name: operator
+        args:
+        - start
+        image: kuroboros-operator:latest
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts:
+        - mountPath: /etc/config/operator.conf
+          name: config-volume
+      securityContext:
+        runAsNonRoot: true
+      serviceAccount: operator-sa
+      volumes:
+      - configMap:
+          name: operator-config
+        name: config-volume

@@ -1,0 +1,15 @@
+from kuroboros.schema import BaseCRD, prop
+
+class {{ kind }}(BaseCRD):
+    """ 
+    TODO: Add your specs here!
+    remember to use something like
+    
+    image_tag = prop(str, default="redis")
+
+    You can ovewrite the `status` object with something like
+
+    status=prop(dict, properties={
+        "current_size": prop(int, required=True, default=0)
+    })
+    """

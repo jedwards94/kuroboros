@@ -1,0 +1,11 @@
+from kuroboros.reconciler import BaseReconciler
+from .crd import {{ kind }}
+
+
+class {{ kind }}Reconciler(BaseReconciler[{{ kind }}]):
+    
+    def reconcile(self, logger, object):
+        """
+        TODO: Implement your reconcilation logic here
+        """
+        pass

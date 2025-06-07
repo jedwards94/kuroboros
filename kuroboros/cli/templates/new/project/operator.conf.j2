@@ -1,0 +1,20 @@
+[operator]
+    name={{ name }}
+    leader_acquire_interval_seconds=10
+    pending_remove_interval_seconds=5
+    metrics_update_interval_seconds=5
+    retry_backoff_seconds=5
+    metrics_port=8080
+
+# Example configuration to give the operator acces to manage pods
+# [generate.rbac.policies.manage_pods]
+#   api_groups=
+#   resources=pods
+#   verbs=create,patch,update,list,watch
+
+
+# Example configuration to set image in Kustomization and other porcesses
+# [generate.deployment.image]
+#    registry=my.registry.io
+#    repository=kuroboros-operator
+#    tag=v0.0.1

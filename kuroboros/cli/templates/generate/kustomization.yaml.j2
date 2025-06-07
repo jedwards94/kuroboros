@@ -1,0 +1,17 @@
+kind: Kustomization
+apiVersion: kustomize.config.k8s.io/v1beta1
+
+resources:
+{%- for resource in resources %}
+- {{ resource }}
+{%- endfor %}
+
+{%- if images | length > 0 %}
+images:
+{%- for image in images %}
+  - name: {{ image.name }}
+    newName: {{ image.new_name }}
+    newTag: {{ image.new_tag }}
+{%- endfor %}
+{%- endif %}
+
