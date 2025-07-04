@@ -43,11 +43,11 @@ class Controller:
         config.getfloat("operator", "pending_remove_interval_seconds", fallback=5.0)
     )
     __logger: Logger = logger.root_logger.getChild(__name__)
-    __members: MutableMapping[Tuple[str, str], Tuple[threading.Thread, threading.Event]] = {}
-    __pending_remove: List[Tuple[str, str]] = []
+    _members: MutableMapping[Tuple[str, str], Tuple[threading.Thread, threading.Event]]
+    _pending_remove: List[Tuple[str, str]]
 
-    __reconciler: BaseReconciler
-    __group_version_info: GroupVersionInfo
+    _reconciler: BaseReconciler
+    _group_version_info: GroupVersionInfo
     name: str
 
     @property
@@ -55,14 +55,14 @@ class Controller:
         """
         Returns the number of currently watched `Threads` of the controller
         """
-        return len(self.__members)
+        return len(self._members)
 
     @property
     def reconciler(self) -> BaseReconciler:
         """
         Returns the reconciler of the controller
         """
-        return self.__reconciler
+        return self._reconciler
 
     def __init__(
         self,
@@ -72,16 +72,18 @@ class Controller:
     ) -> None:
         self.name = name
         self.__logger = self.__logger.getChild(self.name)
-        self.__reconciler = reconciler
-        self.__group_version_info = group_version_info
-        self.__check_permissions()
+        self._reconciler = reconciler
+        self._group_version_info = group_version_info
+        self._check_permissions()
+        self._members = {}
+        self._pending_remove = []
 
-    def __check_permissions(self):
+    def _check_permissions(self):
         api = client.AuthorizationV1Api()
         for verb in ["create", "list", "watch", "delete", "get", "patch", "update"]:
             resource_attributes = client.V1ResourceAttributes(
-                group=self.__group_version_info.group,
-                resource=self.__group_version_info.plural,
+                group=self._group_version_info.group,
+                resource=self._group_version_info.plural,
                 verb=verb,
             )
 
@@ -98,63 +100,63 @@ class Controller:
                 continue
             elif response.status is not None and response.status.denied:
                 raise RuntimeWarning(
-                    f"operator doesn't have {verb} permission over the CRD {self.__group_version_info.crd_name}"
+                    f"operator doesn't have {verb} permission over the CRD {self._group_version_info.crd_name}"
                 )
 
-    def __add_member(self, crd: BaseCRD):
+    def _add_member(self, crd: BaseCRD):
         """
         Adds the object to be managed and starts its `_reconcile` function
         in a thread
         """
-        if crd.namespace_name in self.__members:
+        if crd.namespace_name in self._members:
             return
-        self.__reconciler.api = client.CustomObjectsApi()
+        self._reconciler.api = client.CustomObjectsApi()
         event = threading.Event()
         thread_loop = threading.Thread(
-            target=self.__reconciler._reconcile,
+            target=self._reconciler._reconcile,
             args=(crd, event),
             daemon=True,
         )
         thread_loop.start()
-        self.__members[crd.namespace_name] = (thread_loop, event)
+        self._members[crd.namespace_name] = (thread_loop, event)
         self.__logger.info(
-            f"<{self.__group_version_info.crd_name}> {crd.namespace_name} added as member"
+            f"<{self._group_version_info.crd_name}> {crd.namespace_name} added as member"
         )
 
-    def __add_pending_remove(self, namespace_name: Tuple[str, str]):
+    def _add_pending_remove(self, namespace_name: Tuple[str, str]):
         """
         Adds the object to be safely removed from the management list
         """
-        if namespace_name in self.__pending_remove:
+        if namespace_name in self._pending_remove:
             return
-        self.__pending_remove.append(namespace_name)
+        self._pending_remove.append(namespace_name)
         self.__logger.info(
-            f"<{self.__group_version_info.crd_name}> {namespace_name} CR added as pending_remove"
+            f"<{self._group_version_info.crd_name}> {namespace_name} CR added as pending_remove"
         )
 
-    def __remove_member(self, namespace_name: Tuple[str, str]):
+    def _remove_member(self, namespace_name: Tuple[str, str]):
         """
         Sends an stop event to the member thread and stops the loop
         """
-        if namespace_name not in self.__members:
+        if namespace_name not in self._members:
             return
-        self.__members.pop(namespace_name)[1].set()
+        self._members.pop(namespace_name)[1].set()
         self.__logger.info(
-            f"no longer watching <{self.__group_version_info.crd_name}> {namespace_name} CR until new updates"
+            f"no longer watching <{self._group_version_info.crd_name}> {namespace_name} CR until new updates"
         )
 
-    def __get_current_cr_list(self, api: client.CustomObjectsApi) -> List[Any]:
+    def _get_current_cr_list(self, api: client.CustomObjectsApi) -> List[Any]:
         """
         Gets the current list of objects in the cluster
         """
         current_cr_resp = api.list_cluster_custom_object(
-            group=self.__group_version_info.group,
-            version=self.__group_version_info.api_version,
-            plural=self.__group_version_info.plural,
+            group=self._group_version_info.group,
+            version=self._group_version_info.api_version,
+            plural=self._group_version_info.plural,
         )
         return current_cr_resp["items"]
 
-    def __stream_events(
+    def _stream_events(
         self,
         api: client.CustomObjectsApi,
         watcher: watch.Watch,
@@ -167,142 +169,142 @@ class Controller:
             Dict[Any, Any],
             watcher.stream(
                 api.list_cluster_custom_object,
-                group=self.__group_version_info.group,
-                version=self.__group_version_info.api_version,
-                plural=self.__group_version_info.plural,
+                group=self._group_version_info.group,
+                version=self._group_version_info.api_version,
+                plural=self._group_version_info.plural,
             ),
         )
 
-    def __preload_existing_cr(self):
+    def _preload_existing_cr(self):
         self.__logger.info(
-            f"preloading existing <{self.__group_version_info.crd_name}> CRs"
+            f"preloading existing <{self._group_version_info.crd_name}> CRs"
         )
         try:
             api = client.CustomObjectsApi()
-            crd_type: type[BaseCRD] = self.__reconciler._type
-            current_crs = self.__get_current_cr_list(api)
+            crd_type: type[BaseCRD] = self._reconciler._type
+            current_crs = self._get_current_cr_list(api)
             for pending in current_crs:
                 crd_inst: BaseCRD = crd_type(api)
                 crd_inst.load_data(data=pending)
-                self.__add_member(crd_inst)
+                self._add_member(crd_inst)
             self.__logger.info(
-                f"preloaded {len(current_crs)} <{self.__group_version_info.crd_name}> CR(s)"
+                f"preloaded {len(current_crs)} <{self._group_version_info.crd_name}> CR(s)"
             )
         except Exception as e:
             self.__logger.error(
-                f"error while preloading <{self.__group_version_info.crd_name}> CR",
+                f"error while preloading <{self._group_version_info.crd_name}> CR",
                 e,
                 exc_info=True,
             )
             raise e
 
-    def __watch_pending_remove(self):
+    def _watch_pending_remove(self):
         """
         Looks for the objects with `finalizers` pending to be removed
         every 5 seconds and removes them once they no longer exists
         """
         self.__logger.info(
-            f"starting to watch <{self.__group_version_info.crd_name}> CRs pending to remove"
+            f"starting to watch <{self._group_version_info.crd_name}> CRs pending to remove"
         )
         api = client.CustomObjectsApi()
         while True:
-            for namespace, name in self.__pending_remove:
+            for namespace, name in self._pending_remove:
                 self.__logger.info(
-                    f"currently {len(self.__pending_remove)} <{self.__group_version_info.crd_name}> CRs pending to remove"
+                    f"currently {len(self._pending_remove)} <{self._group_version_info.crd_name}> CRs pending to remove"
                 )
                 try:
                     api.get_namespaced_custom_object_with_http_info(
-                        group=self.__group_version_info.group,
-                        version=self.__group_version_info.api_version,
-                        plural=self.__group_version_info.plural,
+                        group=self._group_version_info.group,
+                        version=self._group_version_info.api_version,
+                        plural=self._group_version_info.plural,
                         name=name,
                         namespace=namespace,
                     )
                 except client.ApiException as e:
                     if e.status == 404:
-                        self.__remove_member((namespace, name))
-                        self.__pending_remove.remove((namespace, name))
+                        self._remove_member((namespace, name))
+                        self._pending_remove.remove((namespace, name))
                         self.__logger.info(
-                            f"<{self.__group_version_info.crd_name}> {(namespace, name)} CR no longer found, removed"
+                            f"<{self._group_version_info.crd_name}> {(namespace, name)} CR no longer found, removed"
                         )
                     else:
                         self.__logger.error(
-                            f"unexpected api error ocurred while watching pending_remove <{self.__group_version_info.crd_name}> CR",
+                            f"unexpected api error ocurred while watching pending_remove <{self._group_version_info.crd_name}> CR",
                             e,
                             exc_info=True,
                         )
                         raise e
 
             defunct_members = []
-            for namespace_name, (thread, _) in self.__members.items():
+            for namespace_name, (thread, _) in self._members.items():
                 if not thread.is_alive():
                     defunct_members.append(namespace_name)
             for m in defunct_members:
-                self.__remove_member(m)
+                self._remove_member(m)
                     
             time.sleep(self.__CLEANUP_INTERVAL)
 
-    def __watch_cr_events(self):
+    def _watch_cr_events(self):
         """
         Watch for the kubernetes events of the object.
         Adds the member if its `ADDED` or `MODIFIED` and removes them when `DELETED`
         """
         self.__logger.info(
-            f"starting to watch <{self.__group_version_info.crd_name}> events"
+            f"starting to watch <{self._group_version_info.crd_name}> events"
         )
         watcher = watch.Watch()
-        crd_type: type[BaseCRD] = self.__reconciler._type
+        crd_type: type[BaseCRD] = self._reconciler._type
         api = client.CustomObjectsApi()
         try:
-            for event in self.__stream_events(api, watcher, crd_type):
+            for event in self._stream_events(api, watcher, crd_type):
                 if type(event) != dict:
                     self.__logger.warning("event received is not a dict, skipping")
                     continue
                 try:
                     e_type = event["type"]
-                    crd_inst: BaseCRD = self.__reconciler._type(api)
+                    crd_inst: BaseCRD = self._reconciler._type(api)
                     crd_inst.load_data(event["object"])
                     self.__logger.debug(
                         f"event: {crd_inst.namespace_name} {event['type']}"
                     )
                     if e_type == EventEnum.ADDED or e_type == EventEnum.MODIFIED:
-                        self.__add_member(crd_inst)
+                        self._add_member(crd_inst)
                     elif e_type == EventEnum.DELETED:
                         if (
                             crd_inst.finalizers is not None
                             and len(crd_inst.finalizers) > 0
                         ):
-                            self.__add_pending_remove(crd_inst.namespace_name)
+                            self._add_pending_remove(crd_inst.namespace_name)
                             continue
-                        self.__remove_member(crd_inst.namespace_name)
+                        self._remove_member(crd_inst.namespace_name)
                     else:
                         self.__logger.warning(f"event type {event['type']} not handled")
 
                 except Exception as e:
                     self.__logger.warning(
-                        f"an Exception ocurred while streaming <{self.__group_version_info.crd_name}> events",
+                        f"an Exception ocurred while streaming <{self._group_version_info.crd_name}> events",
                         e,
                         exc_info=True,
                     )
                     continue
         except Exception as e:
             self.__logger.error(
-                f"error while watching <{self.__group_version_info.crd_name}>",
+                f"error while watching <{self._group_version_info.crd_name}>",
                 e,
                 exc_info=True,
             )
             pass
         finally:
             self.__logger.info(
-                f"no longer watching events from <{self.__group_version_info.crd_name}>"
+                f"no longer watching events from <{self._group_version_info.crd_name}>"
             )
             watcher.stop()
 
     def run(self):
-        watcher_loop = threading.Thread(target=self.__watch_cr_events)
-        cleanup_loop = threading.Thread(target=self.__watch_pending_remove)
+        watcher_loop = threading.Thread(target=self._watch_cr_events)
+        cleanup_loop = threading.Thread(target=self._watch_pending_remove)
 
-        self.__preload_existing_cr()
+        self._preload_existing_cr()
 
         watcher_loop.start()
         cleanup_loop.start()

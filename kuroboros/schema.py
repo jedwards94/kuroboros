@@ -1,10 +1,7 @@
 from typing import Any, List, Tuple, Dict, TypeVar, cast, get_args, get_origin
 from kubernetes import client
 
-from kubernetes.client import (
-    V1JSONSchemaProps,
-    V1OwnerReference,
-)
+from kubernetes.client import V1OwnerReference
 
 from kuroboros.group_version_info import GroupVersionInfo
 
@@ -79,7 +76,6 @@ def prop(
 
 class BaseCRD:
     # instance properties
-    __data = {}
     api: client.CustomObjectsApi | None
     group_version: GroupVersionInfo | None
     status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
@@ -89,6 +85,7 @@ class BaseCRD:
         api: client.CustomObjectsApi | None = None,
         group_version: GroupVersionInfo | None = None,
     ):
+        self._data = {}
         self.api = api
         self.group_version = group_version
         return
@@ -98,9 +95,9 @@ class BaseCRD:
         loads an object as a `dict` into the class to get the values
         """
         if isinstance(data, self.__class__):
-            self.__data = data.__data
+            self._data = data._data
             return
-        self.__data = dict(data)
+        self._data = dict(data)
 
     def patch(self, patch_status: bool = True):
         """
@@ -118,22 +115,22 @@ class BaseCRD:
             "metadata": {
                 **{
                     k: v
-                    for k, v in self.__data["metadata"].items()
+                    for k, v in self._data["metadata"].items()
                     if k not in ["resourceVersion", "managedFields"]
                 },
             },
-            "spec": self.__data.get("spec", {}),
-            "status": self.__data.get("status", {}),
+            "spec": self._data.get("spec", {}),
+            "status": self._data.get("status", {}),
         }
         if self.group_version.scope == "Namespaced":
-            if "status" in self.__data and patch_status:
+            if "status" in self._data and patch_status:
                 response = self.api.patch_namespaced_custom_object_status(
                     group=self.group_version.group,
                     namespace=self.metadata["namespace"],
                     name=self.metadata["name"],
                     version=self.group_version.api_version,
                     plural=self.group_version.plural,
-                    body={"status": self.__data["status"]},
+                    body={"status": self._data["status"]},
                 )
 
                 self.load_data(response)
@@ -150,7 +147,7 @@ class BaseCRD:
             self.load_data(response)
 
     def __getattribute__(self, name: str):
-        data = object.__getattribute__(self, "_BaseCRD__data")
+        data = object.__getattribute__(self, "_data")
         attr = object.__getattribute__(self, name)
         try:
             if name == "status" or name == "metadata":
@@ -166,9 +163,9 @@ class BaseCRD:
         try:
             attr = object.__getattribute__(self, name)
             if name == "status" or name == "metadata":
-                self.__data[name] = value
+                self._data[name] = value
             elif isinstance(attr, CRDProp):
-                self.__data["spec"][name] = value
+                self._data["spec"][name] = value
             else:
                 return object.__setattr__(self, name, value)
         except:
@@ -221,9 +218,9 @@ class BaseCRD:
 
     @property
     def metadata(self) -> Dict[Any, Any]:
-        if "metadata" not in self.__data.keys():
+        if "metadata" not in self._data.keys():
             raise RuntimeError("method called at wrong time, no metadata present")
-        return self.__data["metadata"]
+        return self._data["metadata"]
 
     @metadata.setter
     def metadata(self, value):

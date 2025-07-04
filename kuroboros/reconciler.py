@@ -22,11 +22,11 @@ class BaseReconciler(Generic[T]):
     _type: Type[T]
     __logger = root_logger.getChild(__name__)
 
-    __group_version_info: GroupVersionInfo
+    _group_version_info: GroupVersionInfo
 
     def __init__(self, group_version: GroupVersionInfo):
         self.__logger = self.__logger.getChild(self.__class__.__name__)
-        self.__group_version_info = group_version
+        self._group_version_info = group_version
         t_type = None
         for base in getattr(self.__class__, "__orig_bases__", []):
             origin = get_origin(base)
@@ -61,15 +61,15 @@ class BaseReconciler(Generic[T]):
         while not stop.is_set():
             try:
                 latest = self.__api.get_namespaced_custom_object(
-                    group=self.__group_version_info.group,
-                    version=self.__group_version_info.api_version,
+                    group=self._group_version_info.group,
+                    version=self._group_version_info.api_version,
                     name=object.name,
                     namespace=object.namespace,
-                    plural=self.__group_version_info.plural,
+                    plural=self._group_version_info.plural,
                 )
-                inst = self._type(api=self.__api, group_version=self.__group_version_info)
+                inst = self._type(api=self.__api, group_version=self._group_version_info)
                 inst.load_data(latest)
-                inst_logger, filt = reconciler_logger(self.__group_version_info, inst)
+                inst_logger, filt = reconciler_logger(self._group_version_info, inst)
                 if self.reconcile_timeout is None:
                     interval = self.reconcile(logger=inst_logger, object=inst)
                 else:

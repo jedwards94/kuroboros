@@ -26,56 +26,80 @@ class Operator:
     __METRICS_PORT = int(
         kuroboros_config.getint("operator", "metrics_port", fallback=8080)
     )
-    __running = False
-    __uid = str(uuid.uuid4())
-    __logger = logger.root_logger.getChild(__name__)
-    __is_leader = threading.Event()
-    __threads_by_reconciler: Dict[BaseReconciler, Gauge] = {}
+    _running: bool
+    _uid: str
+    _logger = logger.root_logger.getChild(__name__)
+    _is_leader: threading.Event
+    _threads_by_reconciler: Dict[BaseReconciler, Gauge]
 
-    __namespace = OPERATOR_NAMESPACE
+    _namespace: str
     name = get_operator_name()
     
-    __controllers: List[Controller] = []
+    _controllers: List[Controller]
 
     def __init__(self) -> None:
-        self.__logger = self.__logger.getChild(self.name)
+        self._threads_by_reconciler = {}
+        self._is_leader = threading.Event()
+        self._running = False
+        self._uid = str(uuid.uuid4())
+        self._namespace = OPERATOR_NAMESPACE
+        self._logger = self._logger.getChild(self.name)
+        self._controllers = []
         try:
             config.load_kube_config()
         except Exception:
             config.load_incluster_config()
         pass
+    
+    def is_leader(self) -> bool:
+        return self.is_leader()
+    
+    def is_running(self) -> bool:
+        return self._running
+    
+    @property
+    def namespace(self) -> str:
+        return self._namespace
+
+    @property
+    def uid(self) -> str:
+        return self._uid
+
+    @property
+    def controllers(self) -> List[Controller]:
+        return self._controllers.copy()
 
     def add_controller(self, name:str, group_version: GroupVersionInfo, reconciler: BaseReconciler):
-        if self.__running:
-            raise RuntimeError("cannot add reconciler while operator is running")
+        if self.is_running():
+            raise RuntimeError("cannot add controller while operator is running")
         
         controller = Controller(
             name=name,
             group_version_info=group_version,
             reconciler=reconciler,
         )
-        if controller in self.__controllers:
-            raise RuntimeError("cannot add an already added reconciller")
+        if controller.name in [ctrl.name for ctrl in self._controllers]:
+            raise RuntimeError("cannot add an already added controller")
 
-        self.__threads_by_reconciler[controller.reconciler] = Gauge(
+        self._threads_by_reconciler[controller.reconciler] = Gauge(
             "kuroboros_python_threads_by_reconciler",
             "The number of threads running by the CRD controller",
             labelnames=["namespace", "reconciler"],
         )
         
-        self.__controllers.append(controller)
+        self._controllers.append(controller)
 
 
 
-    def __acquire_leader_lease(self):
+    def _acquire_leader_lease(self):
         api = client.CoordinationV1Api()
         lease_name = f"{self.name}-leader"
         lease_duration = 10
-        self.__logger.info(f"trying to acquire leadership with uid: {self.__uid}")
+        self._logger.info(f"trying to acquire leadership with uid: {self._uid}")
         while True:
             try:
                 lease = api.read_namespaced_lease(
-                    name=lease_name, namespace=self.__namespace
+                    name=lease_name, namespace=self._namespace
                 )
             except client.ApiException as e:
                 if e.status == 404:
@@ -86,19 +110,19 @@ class Operator:
                                 "%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()
                             ),
                             lease_duration_seconds=lease_duration,
-                            holder_identity=self.__uid,
+                            holder_identity=self._uid,
                         ),
                     )
-                    api.create_namespaced_lease(namespace=self.__namespace, body=lease)
-                    if not self.__is_leader.is_set():
-                        self.__logger.info(
-                            f"leadership acquired under uid {self.__uid}"
+                    api.create_namespaced_lease(namespace=self._namespace, body=lease)
+                    if not self.is_leader():
+                        self._logger.info(
+                            f"leadership acquired under uid {self._uid}"
                         )
-                        self.__is_leader.set()
+                        self._is_leader.set()
                     continue
 
                 else:
-                    self.__logger.error(
+                    self._logger.error(
                         "error while trying to acquire leadership lease",
                         e,
                         exc_info=True,
@@ -112,18 +136,18 @@ class Operator:
             lease_expired = (
                 current_time > renew_time + lease_data.spec.lease_duration_seconds
             )
-            if lease_expired or lease_data.spec.holder_identity == self.__uid:
+            if lease_expired or lease_data.spec.holder_identity == self._uid:
                 lease_data.spec.renew_time = time.strftime(
                     "%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()
                 )
-                lease_data.spec.holder_identity = self.__uid
+                lease_data.spec.holder_identity = self._uid
                 lease_data.spec.lease_duration_seconds = lease_duration
                 api.replace_namespaced_lease(
-                    name=lease_name, namespace=self.__namespace, body=lease_data
+                    name=lease_name, namespace=self._namespace, body=lease_data
                 )
-                if not self.__is_leader.is_set():
-                    self.__logger.info(f"leadership acquired under uid {self.__uid}")
-                    self.__is_leader.set()
+                if not self._is_leader.is_set():
+                    self._logger.info(f"leadership acquired under uid {self._uid}")
+                    self._is_leader.set()
 
             time.sleep(
                 kuroboros_config.getfloat(
@@ -131,20 +155,20 @@ class Operator:
                 )
             )
 
-    def __metrics(self) -> None:
+    def _metrics(self) -> None:
         while True:
-            for ctrl in self.__controllers:
-                metric = self.__threads_by_reconciler[ctrl.reconciler]
+            for ctrl in self._controllers:
+                metric = self._threads_by_reconciler[ctrl.reconciler]
                 metric.labels(OPERATOR_NAMESPACE, ctrl.reconciler.__class__.__name__).set(
                     ctrl.threads
                 )
             time.sleep(self.__METRICS_INTERVAL)
 
     def start(self):
-        if self.__running:
+        if self._running:
             raise RuntimeError("cannot start an already started Operator")
         
-        if len(self.__controllers) == 0:
+        if len(self._controllers) == 0:
             raise RuntimeError("no controllers found to run the operator")
 
         try:
@@ -152,18 +176,18 @@ class Operator:
         except Exception:
             pass
 
-        self.__is_leader.clear()
-        leader_election = threading.Thread(target=self.__acquire_leader_lease)
+        self._is_leader.clear()
+        leader_election = threading.Thread(target=self._acquire_leader_lease)
         leader_election.start()
-        while not self.__is_leader.is_set():
+        while not self.is_leader():
             if not leader_election.is_alive():
                 raise RuntimeError("leader election loop died while trying to acquire leadership")
             continue
 
-        metrics_loop = threading.Thread(target=self.__metrics)
+        metrics_loop = threading.Thread(target=self._metrics)
 
-        for ctrl in self.__controllers:
+        for ctrl in self._controllers:
             ctrl.run()
 
         metrics_loop.start()
-        self.__running = True
+        self._running = True
