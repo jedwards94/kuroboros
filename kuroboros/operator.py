@@ -177,14 +177,14 @@ class Operator:
             pass
 
         self._is_leader.clear()
-        leader_election = threading.Thread(target=self._acquire_leader_lease)
+        leader_election = threading.Thread(target=self._acquire_leader_lease, name=f"{self.name}-leader-election")
         leader_election.start()
         while not self.is_leader():
             if not leader_election.is_alive():
                 raise RuntimeError("leader election loop died while trying to acquire leadership")
             continue
 
-        metrics_loop = threading.Thread(target=self._metrics)
+        metrics_loop = threading.Thread(target=self._metrics, name=f"{self.name}-metrics")
 
         for ctrl in self._controllers:
             ctrl.run()

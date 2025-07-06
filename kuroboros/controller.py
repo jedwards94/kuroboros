@@ -116,6 +116,7 @@ class Controller:
             target=self._reconciler._reconcile,
             args=(crd, event),
             daemon=True,
+            name=f"{self.name}-{crd.namespace_name}",
         )
         thread_loop.start()
         self._members[crd.namespace_name] = (thread_loop, event)
@@ -301,8 +302,8 @@ class Controller:
             watcher.stop()
 
     def run(self):
-        watcher_loop = threading.Thread(target=self._watch_cr_events)
-        cleanup_loop = threading.Thread(target=self._watch_pending_remove)
+        watcher_loop = threading.Thread(target=self._watch_cr_events, name=f"{self.name}-watcher")
+        cleanup_loop = threading.Thread(target=self._watch_pending_remove, name=f"{self.name}-cleanup")
 
         self._preload_existing_cr()
 
