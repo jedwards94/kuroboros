@@ -15,6 +15,8 @@ from kuroboros.config import (
 from kuroboros.controller import Controller
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
+from kuroboros.webhook import BaseValidationWebhook
+from kuroboros.webhook_server import HTTPSWebhookServer
 
 
 class Operator:
@@ -52,7 +54,7 @@ class Operator:
         pass
     
     def is_leader(self) -> bool:
-        return self.is_leader()
+        return self._is_leader.is_set()
     
     def is_running(self) -> bool:
         return self._running
@@ -69,7 +71,7 @@ class Operator:
     def controllers(self) -> List[Controller]:
         return self._controllers.copy()
 
-    def add_controller(self, name:str, group_version: GroupVersionInfo, reconciler: BaseReconciler):
+    def add_controller(self, name:str, group_version: GroupVersionInfo, reconciler: BaseReconciler, **kwargs) -> None:
         if self.is_running():
             raise RuntimeError("cannot add controller while operator is running")
         
@@ -77,6 +79,7 @@ class Operator:
             name=name,
             group_version_info=group_version,
             reconciler=reconciler,
+            validation_webhook=kwargs.get("validation_webhook", None),
         )
         if controller.name in [ctrl.name for ctrl in self._controllers]:
             raise RuntimeError("cannot add an already added controller")
@@ -188,6 +191,22 @@ class Operator:
 
         for ctrl in self._controllers:
             ctrl.run()
+            
+        validation_endpoints = {}
+        for ctrl in self._controllers:
+            if ctrl.validation_webhook_endpoint is not None:
+                validation_endpoints[ctrl.validation_webhook_endpoint[0]] = ctrl.validation_webhook_endpoint[1]
 
+        if len(validation_endpoints) > 0:
+            webhook_server = HTTPSWebhookServer(
+                cert_file="/home/jota/Proyectos/kuroboros/cert.pem",
+                key_file="/home/jota/Proyectos/kuroboros/key.pem",
+                endpoints=validation_endpoints
+            )
+            webhook_server_thread = threading.Thread(
+                target=webhook_server.start, name=f"{self.name}-webhook-server"
+            )
+            webhook_server_thread.start()
+            
         metrics_loop.start()
         self._running = True

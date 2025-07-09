@@ -12,3 +12,13 @@ class RetriableException(Exception):
         super().__init__(*args)
     
     pass
+
+class ValidationWebhookError(Exception):
+    """Exception raised for validation errors in CRD objects."""
+    
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.reason = message
+    
+    def __str__(self) -> str:
+        return f"ValidationWebhookError: {self.reason}"

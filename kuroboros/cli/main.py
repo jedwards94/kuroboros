@@ -259,6 +259,7 @@ def start():
                 name=name,
                 group_version=ctrl.group_version_info,
                 reconciler=run_version.reconciler,
+                validation_webhook=run_version.validation_webhook,
             )
             click.echo(
                 f"{decoration} {name} ({ctrl.group_version_info.group}/{ctrl.group_version_info.api_version}/{ctrl.group_version_info.plural}) [OK]"

@@ -20,12 +20,12 @@ class BaseReconciler(Generic[T]):
     __api: client.CustomObjectsApi
 
     _type: Type[T]
-    __logger = root_logger.getChild(__name__)
+    _logger = root_logger.getChild(__name__)
 
     _group_version_info: GroupVersionInfo
 
     def __init__(self, group_version: GroupVersionInfo):
-        self.__logger = self.__logger.getChild(self.__class__.__name__)
+        self._logger = self._logger.getChild(self.__class__.__name__)
         self._group_version_info = group_version
         t_type = None
         for base in getattr(self.__class__, "__orig_bases__", []):
@@ -84,26 +84,26 @@ class BaseReconciler(Generic[T]):
             except Exception as e:
                 if isinstance(e, client.ApiException):
                     if e.status == 404:
-                        self.__logger.info(
+                        self._logger.info(
                             f"{self._type.__name__} {object.namespace_name} no longer found, killing thread"
                         )
                         return
                 elif isinstance(e, UnrecoverableException):
-                    self.__logger.fatal(
+                    self._logger.fatal(
                         f"A `UnrecoverableException` ocurred while proccessing {object.namespace_name}",
                         e,
                         exc_info=True,
                     )
                     break
                 elif isinstance(e, RetriableException):
-                    self.__logger.warning(
+                    self._logger.warning(
                         f"A `RetriableException` ocurred while proccessing {object.namespace_name}",
                         e,
                     )
                     interval = e.backoff
                     continue
                 else:
-                    self.__logger.error(
+                    self._logger.error(
                         f"An `Exception` ocurred while proccessing {object.namespace_name}",
                         e,
                         exc_info=True,
@@ -115,7 +115,7 @@ class BaseReconciler(Generic[T]):
                     event_aware_sleep(stop, interval.total_seconds())
                 else:
                     break
-        self.__logger.info(
+        self._logger.info(
             f"{self._type.__name__} {object.namespace_name} reconcile loop stopped"
         )
 

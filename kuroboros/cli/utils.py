@@ -10,6 +10,7 @@ from kuroboros.controller import ControllerConfig, ControllerConfigVersions
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
 from kuroboros.schema import BaseCRD
+from kuroboros.webhook import BaseValidationWebhook
 
 def yaml_format(value):
     """Converts Python types to YAML-compatible strings with proper quoting"""
@@ -106,10 +107,13 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
     path = os.path.join(Path().absolute(), controllers_path)
     directory = Path(path)
     try:
+        # each folder in /controllers
         controllers = [entry.name for entry in directory.iterdir() if entry.is_dir()]
     except:
         controllers = []
     for controller in controllers:
+        # we assume that each controller has a group_version.py file
+        # and a versions folder with the versions of the controller
         ctrl_conf = ControllerConfig()
         ctrl_conf.name = controller
         try:
@@ -128,6 +132,8 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
         versions_dir = Path(versions_path)
         versions = [entry.name for entry in versions_dir.iterdir() if entry.is_dir()]
         for version in versions:
+            # each version folder should have python files with the reconciler, crd classes and 
+            # posibly validation webhook
             ctrl_versions = ControllerConfigVersions()
             ctrl_versions.name = version
             version_path = os.path.join(versions_path, version)
@@ -144,6 +150,8 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                         ctrl_versions.reconciler = obj(group_version)
                     if inspect.isclass(obj) and BaseCRD in obj.__bases__:
                         ctrl_versions.crd = obj(group_version)
+                    if inspect.isclass(obj) and BaseValidationWebhook in obj.__bases__:
+                        ctrl_versions.validation_webhook = obj(group_version)
                 if ctrl_versions.reconciler is not None and ctrl_versions.crd is not None:
                     ctrl_conf.versions.append(ctrl_versions)
         if len(ctrl_conf.versions) > 0:

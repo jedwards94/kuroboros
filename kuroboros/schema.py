@@ -79,15 +79,22 @@ class BaseCRD:
     api: client.CustomObjectsApi | None
     group_version: GroupVersionInfo | None
     status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
+    read_only = False
+    _data: dict = {}
 
     def __init__(
         self,
         api: client.CustomObjectsApi | None = None,
         group_version: GroupVersionInfo | None = None,
+        read_only: bool = False,
+        data: Dict = {},
     ):
-        self._data = {}
+        if read_only == True and data == {}:
+            raise ValueError("read_only CRD must have data provided")
+        self._data = data
         self.api = api
         self.group_version = group_version
+        self.read_only = read_only
         return
 
     def load_data(self, data: Any):
@@ -110,6 +117,11 @@ class BaseCRD:
             raise RuntimeError("`patch` used when api is `None`")
         if self.group_version is None:
             raise RuntimeError("`patch` used when group_version is `None`")
+        
+        if self.read_only:
+            raise RuntimeError(
+                f"Cannot call `patch` on read-only CRD object `{self.__class__.__name__}`"
+            )
 
         new_state = {
             "metadata": {
@@ -160,6 +172,10 @@ class BaseCRD:
             return None
 
     def __setattr__(self, name: str, value: Any) -> None:
+        if self.read_only:
+            raise RuntimeError(
+                f"Cannot set attribute `{name}` on read-only CRD object `{self.__class__.__name__}`"
+            )
         try:
             attr = object.__getattribute__(self, name)
             if name == "status" or name == "metadata":

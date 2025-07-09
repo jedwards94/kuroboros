@@ -1,5 +1,5 @@
 from logging import Logger
-from typing import Any, Dict, List, MutableMapping, Tuple, cast
+from typing import Any, Callable, Dict, List, MutableMapping, Tuple, cast
 import time
 import threading
 from kubernetes import client, watch
@@ -9,6 +9,7 @@ from kuroboros.config import config
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
 from kuroboros.schema import BaseCRD
+from kuroboros.webhook import BaseValidationWebhook
 
 
 class EventEnum:
@@ -21,6 +22,7 @@ class ControllerConfigVersions:
     name: str
     reconciler: BaseReconciler | None = None
     crd: BaseCRD | None = None
+    validation_webhook: BaseValidationWebhook | None = None
 
 
 class ControllerConfig:
@@ -42,12 +44,13 @@ class Controller:
     __CLEANUP_INTERVAL = float(
         config.getfloat("operator", "pending_remove_interval_seconds", fallback=5.0)
     )
-    __logger: Logger = logger.root_logger.getChild(__name__)
+    _logger: Logger = logger.root_logger.getChild(__name__)
     _members: MutableMapping[Tuple[str, str], Tuple[threading.Thread, threading.Event]]
     _pending_remove: List[Tuple[str, str]]
 
     _reconciler: BaseReconciler
     _group_version_info: GroupVersionInfo
+    _validation_webhook: BaseValidationWebhook | None
     name: str
 
     @property
@@ -63,20 +66,43 @@ class Controller:
         Returns the reconciler of the controller
         """
         return self._reconciler
+    
+    
+    @property
+    def has_validation_webhook(self,) -> bool:
+        return self._validation_webhook is not None
+        
+    
+    @property
+    def validation_webhook_endpoint(self) -> Tuple[str, Callable] | None:
+        """
+        Returns the endpoint of the validation webhook if it exists
+        """
+        if self._validation_webhook is not None:
+            return self._validation_webhook.endpoint()
+        return None
 
     def __init__(
         self,
         name: str,
         group_version_info: GroupVersionInfo,
         reconciler: BaseReconciler,
+        validation_webhook: BaseValidationWebhook | None = None,
     ) -> None:
+        
+        if validation_webhook is not None and reconciler._type != validation_webhook._type:
+            raise RuntimeError(
+                "The validation webhook type must match the reconciler type"
+            )
+        
         self.name = name
-        self.__logger = self.__logger.getChild(self.name)
+        self._logger = self._logger.getChild(self.name)
         self._reconciler = reconciler
         self._group_version_info = group_version_info
         self._check_permissions()
         self._members = {}
         self._pending_remove = []
+        self._validation_webhook = validation_webhook
 
     def _check_permissions(self):
         api = client.AuthorizationV1Api()
@@ -120,7 +146,7 @@ class Controller:
         )
         thread_loop.start()
         self._members[crd.namespace_name] = (thread_loop, event)
-        self.__logger.info(
+        self._logger.info(
             f"<{self._group_version_info.crd_name}> {crd.namespace_name} added as member"
         )
 
@@ -131,7 +157,7 @@ class Controller:
         if namespace_name in self._pending_remove:
             return
         self._pending_remove.append(namespace_name)
-        self.__logger.info(
+        self._logger.info(
             f"<{self._group_version_info.crd_name}> {namespace_name} CR added as pending_remove"
         )
 
@@ -142,7 +168,7 @@ class Controller:
         if namespace_name not in self._members:
             return
         self._members.pop(namespace_name)[1].set()
-        self.__logger.info(
+        self._logger.info(
             f"no longer watching <{self._group_version_info.crd_name}> {namespace_name} CR until new updates"
         )
 
@@ -177,7 +203,7 @@ class Controller:
         )
 
     def _preload_existing_cr(self):
-        self.__logger.info(
+        self._logger.info(
             f"preloading existing <{self._group_version_info.crd_name}> CRs"
         )
         try:
@@ -188,11 +214,11 @@ class Controller:
                 crd_inst: BaseCRD = crd_type(api)
                 crd_inst.load_data(data=pending)
                 self._add_member(crd_inst)
-            self.__logger.info(
+            self._logger.info(
                 f"preloaded {len(current_crs)} <{self._group_version_info.crd_name}> CR(s)"
             )
         except Exception as e:
-            self.__logger.error(
+            self._logger.error(
                 f"error while preloading <{self._group_version_info.crd_name}> CR",
                 e,
                 exc_info=True,
@@ -204,13 +230,13 @@ class Controller:
         Looks for the objects with `finalizers` pending to be removed
         every 5 seconds and removes them once they no longer exists
         """
-        self.__logger.info(
+        self._logger.info(
             f"starting to watch <{self._group_version_info.crd_name}> CRs pending to remove"
         )
         api = client.CustomObjectsApi()
         while True:
             for namespace, name in self._pending_remove:
-                self.__logger.info(
+                self._logger.info(
                     f"currently {len(self._pending_remove)} <{self._group_version_info.crd_name}> CRs pending to remove"
                 )
                 try:
@@ -225,11 +251,11 @@ class Controller:
                     if e.status == 404:
                         self._remove_member((namespace, name))
                         self._pending_remove.remove((namespace, name))
-                        self.__logger.info(
+                        self._logger.info(
                             f"<{self._group_version_info.crd_name}> {(namespace, name)} CR no longer found, removed"
                         )
                     else:
-                        self.__logger.error(
+                        self._logger.error(
                             f"unexpected api error ocurred while watching pending_remove <{self._group_version_info.crd_name}> CR",
                             e,
                             exc_info=True,
@@ -250,7 +276,7 @@ class Controller:
         Watch for the kubernetes events of the object.
         Adds the member if its `ADDED` or `MODIFIED` and removes them when `DELETED`
         """
-        self.__logger.info(
+        self._logger.info(
             f"starting to watch <{self._group_version_info.crd_name}> events"
         )
         watcher = watch.Watch()
@@ -259,13 +285,13 @@ class Controller:
         try:
             for event in self._stream_events(api, watcher, crd_type):
                 if type(event) != dict:
-                    self.__logger.warning("event received is not a dict, skipping")
+                    self._logger.warning("event received is not a dict, skipping")
                     continue
                 try:
                     e_type = event["type"]
                     crd_inst: BaseCRD = self._reconciler._type(api)
                     crd_inst.load_data(event["object"])
-                    self.__logger.debug(
+                    self._logger.debug(
                         f"event: {crd_inst.namespace_name} {event['type']}"
                     )
                     if e_type == EventEnum.ADDED or e_type == EventEnum.MODIFIED:
@@ -279,24 +305,24 @@ class Controller:
                             continue
                         self._remove_member(crd_inst.namespace_name)
                     else:
-                        self.__logger.warning(f"event type {event['type']} not handled")
+                        self._logger.warning(f"event type {event['type']} not handled")
 
                 except Exception as e:
-                    self.__logger.warning(
+                    self._logger.warning(
                         f"an Exception ocurred while streaming <{self._group_version_info.crd_name}> events",
                         e,
                         exc_info=True,
                     )
                     continue
         except Exception as e:
-            self.__logger.error(
+            self._logger.error(
                 f"error while watching <{self._group_version_info.crd_name}>",
                 e,
                 exc_info=True,
             )
             pass
         finally:
-            self.__logger.info(
+            self._logger.info(
                 f"no longer watching events from <{self._group_version_info.crd_name}>"
             )
             watcher.stop()
