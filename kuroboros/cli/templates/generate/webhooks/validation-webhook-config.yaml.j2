@@ -10,7 +10,7 @@ webhooks:
         name: {{ name }}-webhook
         namespace: {{ name }}
         path: /{{ gvi.api_version }}/{{ gvi.singular }}/validate
-      caBundle: {{ ca_bundle | default('<REPLACE_ME>') }}
+      caBundle: {{ ca_bundle | default('""') }}
     rules:
       - apiGroups:
           - {{ gvi.group }}

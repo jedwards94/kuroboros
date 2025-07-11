@@ -80,7 +80,7 @@ def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
 
     for ctrl in controllers:
         ctrl_crd_policy = {
-            "api_groups": [version.name for version in ctrl.versions],
+            "api_groups": [ctrl.group_version_info.group],
             "resources": [ctrl.group_version_info.plural],
             "verbs": ["create", "list", "watch", "delete", "get", "patch", "update"],    
         }
