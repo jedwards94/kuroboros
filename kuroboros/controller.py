@@ -74,12 +74,12 @@ class Controller:
         
     
     @property
-    def validation_webhook_endpoint(self) -> Tuple[str, Callable] | None:
+    def validation_webhook(self) -> BaseValidationWebhook | None:
         """
         Returns the endpoint of the validation webhook if it exists
         """
         if self._validation_webhook is not None:
-            return self._validation_webhook.endpoint()
+            return self._validation_webhook
         return None
 
     def __init__(
@@ -95,10 +95,15 @@ class Controller:
                 "The validation webhook type must match the reconciler type"
             )
         
-        self.name = name
+        self._group_version_info = group_version_info
+        major = group_version_info.major
+        stability = group_version_info.stability.capitalize()
+        minor = (
+            group_version_info.minor if group_version_info.minor != 0 else ""
+        )
+        self.name = f"{name.capitalize()}V{major}{stability}{minor}Controller"
         self._logger = self._logger.getChild(self.name)
         self._reconciler = reconciler
-        self._group_version_info = group_version_info
         self._check_permissions()
         self._members = {}
         self._pending_remove = []
@@ -327,11 +332,13 @@ class Controller:
             )
             watcher.stop()
 
-    def run(self):
-        watcher_loop = threading.Thread(target=self._watch_cr_events, name=f"{self.name}-watcher")
-        cleanup_loop = threading.Thread(target=self._watch_pending_remove, name=f"{self.name}-cleanup")
+    def run(self) -> Tuple[threading.Thread, threading.Thread]:
+        watcher_loop = threading.Thread(target=self._watch_cr_events, name=f"{self.name}-watcher", daemon=True)
+        cleanup_loop = threading.Thread(target=self._watch_pending_remove, name=f"{self.name}-cleanup", daemon=True)
 
         self._preload_existing_cr()
 
         watcher_loop.start()
         cleanup_loop.start()
+        
+        return (watcher_loop, cleanup_loop)

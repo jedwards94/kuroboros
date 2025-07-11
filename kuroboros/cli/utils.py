@@ -147,10 +147,25 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                 module = importlib.import_module(f"{controllers_path}.{controller}.{version}.{module_name}")
                 for _, obj in inspect.getmembers(module):
                     if inspect.isclass(obj) and BaseReconciler in obj.__bases__:
+                        if ctrl_versions.reconciler is not None and not isinstance(ctrl_versions.reconciler, obj):
+                            raise RuntimeError(
+                                f"Multiple reconciler classes found in {controller} {version}. "
+                                "Only one reconciler class is allowed per version."
+                            )
                         ctrl_versions.reconciler = obj(group_version)
                     if inspect.isclass(obj) and BaseCRD in obj.__bases__:
+                        if ctrl_versions.crd is not None and not isinstance(ctrl_versions.crd, obj):
+                            raise RuntimeError(
+                                f"Multiple CRD classes found in {controller} {version}. "
+                                "Only one CRD class is allowed per version."
+                            )
                         ctrl_versions.crd = obj(group_version)
                     if inspect.isclass(obj) and BaseValidationWebhook in obj.__bases__:
+                        if ctrl_versions.validation_webhook is not None and not isinstance(ctrl_versions.validation_webhook, obj):
+                            raise RuntimeError(
+                                f"Multiple validation webhook classes found in {controller} {version}. "
+                                "Only one validation webhook class is allowed per version."
+                            )
                         ctrl_versions.validation_webhook = obj(group_version)
                 if ctrl_versions.reconciler is not None and ctrl_versions.crd is not None:
                     ctrl_conf.versions.append(ctrl_versions)

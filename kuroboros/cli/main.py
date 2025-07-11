@@ -29,6 +29,7 @@ from kuroboros.config import config
 from kuroboros.operator import Operator
 
 from importlib.metadata import version
+
 VERSION_NUM = version("kuroboros")
 
 
@@ -60,9 +61,11 @@ def cli(ctx, config_file):
     config.read(config_file)
     pass
 
-@cli.command("version",help="Get kuroboros version")
+
+@cli.command("version", help="Get kuroboros version")
 def version_cli():
     click.echo(VERSION_NUM)
+
 
 @cli.group(help="Generate the kubernetes resources manifests to deploy the operator")
 @click.pass_context
@@ -105,7 +108,7 @@ def rbac():
         "leader-election-role.yaml",
         "leader-election-role-binding.yaml",
     ]
-    
+
     create_file(output, "service-account.yaml", rbac_sa())
     create_file(output, "operator-role.yaml", rbac_operator_role(controllers))
     create_file(output, "operator-role-binding.yaml", rbac_operator_role_binding())
@@ -239,40 +242,42 @@ def build():
 
 
 @cli.command(help="Starts the Kuroboros Operator")
-def start():
+@click.option(
+    "--skip-controllers",
+    is_flag=True,
+    default=False,
+    help="Skips all controllers startup",
+)
+@click.option(
+    "--skip-webhook-server",
+    is_flag=True,
+    default=False,
+    help="Skips the webhook server startup",
+)
+def start(skip_controllers, skip_webhook_server):
     operator = Operator()
     click.echo(f"🌀🐍 Starting {operator.name} ...")
-    last_ctrl = controllers[-1]
     for ctrl in controllers:
-        is_last = ctrl == last_ctrl
-        decoration = "  └─" if is_last else "  ├─"
         run_version = ctrl.get_run_version()
-        major = ctrl.group_version_info.major
-        stability = ctrl.group_version_info.stability.capitalize()
-        minor = ctrl.group_version_info.minor if ctrl.group_version_info.minor != 0 else ""
         if run_version.reconciler is None:
             raise RuntimeError(f"reconciler `None` in {ctrl.name} {run_version.name}")
 
-        name = f"{ctrl.name.capitalize()}V{major}{stability}{minor}Controller"
         try:
             operator.add_controller(
-                name=name,
+                name=ctrl.name,
                 group_version=ctrl.group_version_info,
                 reconciler=run_version.reconciler,
                 validation_webhook=run_version.validation_webhook,
             )
-            click.echo(
-                f"{decoration} {name} ({ctrl.group_version_info.group}/{ctrl.group_version_info.api_version}/{ctrl.group_version_info.plural}) [OK]"
-            )
 
         except Exception as e:
-            click.echo(
-                f"{decoration} {name} ({ctrl.group_version_info.group}/{ctrl.group_version_info.api_version}/{ctrl.group_version_info.plural}) [FAILED]"
-            )
             click.echo(e)
             continue
 
-    operator.start()
+    operator.start(
+        skip_webhook_server=skip_webhook_server, skip_controllers=skip_controllers
+    )
+    return
 
 
 if __name__ == "__main__":

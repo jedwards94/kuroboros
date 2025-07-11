@@ -1,6 +1,7 @@
+import multiprocessing
 import threading
 import time
-from typing import Dict, List, cast
+from typing import Dict, List, Tuple, cast
 import uuid
 
 from kubernetes import client, config
@@ -28,6 +29,13 @@ class Operator:
     __METRICS_PORT = int(
         kuroboros_config.getint("operator", "metrics_port", fallback=8080)
     )
+    __CERT_PATH = kuroboros_config.get(
+        "operator", "cert_path", fallback="/etc/cert.pem"
+    )
+    __KEY_PATH = kuroboros_config.get("operator", "key_path", fallback="/etc/key.pem")
+    __WEBHOOK_PORT = int(
+        kuroboros_config.getint("operator", "webhook_port", fallback=443)
+    )
     _running: bool
     _uid: str
     _logger = logger.root_logger.getChild(__name__)
@@ -36,8 +44,11 @@ class Operator:
 
     _namespace: str
     name = get_operator_name()
-    
+
     _controllers: List[Controller]
+    _controller_threads: Dict[Controller, Tuple[threading.Thread, threading.Thread]] = (
+        {}
+    )
 
     def __init__(self) -> None:
         self._threads_by_reconciler = {}
@@ -52,13 +63,13 @@ class Operator:
         except Exception:
             config.load_incluster_config()
         pass
-    
+
     def is_leader(self) -> bool:
         return self._is_leader.is_set()
-    
+
     def is_running(self) -> bool:
         return self._running
-    
+
     @property
     def namespace(self) -> str:
         return self._namespace
@@ -71,10 +82,16 @@ class Operator:
     def controllers(self) -> List[Controller]:
         return self._controllers.copy()
 
-    def add_controller(self, name:str, group_version: GroupVersionInfo, reconciler: BaseReconciler, **kwargs) -> None:
+    def add_controller(
+        self,
+        name: str,
+        group_version: GroupVersionInfo,
+        reconciler: BaseReconciler,
+        **kwargs,
+    ) -> None:
         if self.is_running():
             raise RuntimeError("cannot add controller while operator is running")
-        
+
         controller = Controller(
             name=name,
             group_version_info=group_version,
@@ -89,10 +106,8 @@ class Operator:
             "The number of threads running by the CRD controller",
             labelnames=["namespace", "reconciler"],
         )
-        
+
         self._controllers.append(controller)
-
-
 
     def _acquire_leader_lease(self):
         api = client.CoordinationV1Api()
@@ -118,9 +133,7 @@ class Operator:
                     )
                     api.create_namespaced_lease(namespace=self._namespace, body=lease)
                     if not self.is_leader():
-                        self._logger.info(
-                            f"leadership acquired under uid {self._uid}"
-                        )
+                        self._logger.info(f"leadership acquired under uid {self._uid}")
                         self._is_leader.set()
                     continue
 
@@ -162,51 +175,92 @@ class Operator:
         while True:
             for ctrl in self._controllers:
                 metric = self._threads_by_reconciler[ctrl.reconciler]
-                metric.labels(OPERATOR_NAMESPACE, ctrl.reconciler.__class__.__name__).set(
-                    ctrl.threads
-                )
+                metric.labels(
+                    OPERATOR_NAMESPACE, ctrl.reconciler.__class__.__name__
+                ).set(ctrl.threads)
             time.sleep(self.__METRICS_INTERVAL)
 
-    def start(self):
+    def start(
+        self, skip_controllers: bool = False, skip_webhook_server: bool = False
+    ) -> None:
+        if skip_controllers and skip_webhook_server:
+            raise RuntimeError(
+                "cannot start operator without running controllers or webhook server"
+            )
         if self._running:
             raise RuntimeError("cannot start an already started Operator")
-        
+
         if len(self._controllers) == 0:
             raise RuntimeError("no controllers found to run the operator")
+
+        op_threads = []
+
+        if not skip_controllers:
+            self._is_leader.clear()
+            leader_election = threading.Thread(
+                target=self._acquire_leader_lease,
+                name=f"{self.name}-leader-election",
+                daemon=True,
+            )
+            op_threads.append(leader_election)
+            leader_election.start()
+            while not self.is_leader():
+                if not leader_election.is_alive():
+                    raise RuntimeError(
+                        "leader election loop died while trying to acquire leadership"
+                    )
+                continue
+
+            for ctrl in self._controllers:
+                ctrl_threads = ctrl.run()
+                self._controller_threads[ctrl] = ctrl_threads
+
+        if not skip_webhook_server:
+            webhooks = []
+            for ctrl in self._controllers:
+                if ctrl.validation_webhook is not None:
+                    webhooks.append(ctrl.validation_webhook)
+
+            if len(webhooks) > 0:
+                webhook_server = HTTPSWebhookServer(
+                    cert_file=self.__CERT_PATH,
+                    key_file=self.__KEY_PATH,
+                    endpoints=webhooks,
+                    port=self.__WEBHOOK_PORT,
+                )
+                webhook_server_process = multiprocessing.Process(
+                    target=webhook_server.start,
+                    name=f"{self.name}-webhook-server-process",
+                )
+                webhook_server_process.start()
+                op_threads.append(webhook_server_process)
 
         try:
             start_http_server(self.__METRICS_PORT)
         except Exception:
             pass
-
-        self._is_leader.clear()
-        leader_election = threading.Thread(target=self._acquire_leader_lease, name=f"{self.name}-leader-election")
-        leader_election.start()
-        while not self.is_leader():
-            if not leader_election.is_alive():
-                raise RuntimeError("leader election loop died while trying to acquire leadership")
-            continue
-
-        metrics_loop = threading.Thread(target=self._metrics, name=f"{self.name}-metrics")
-
-        for ctrl in self._controllers:
-            ctrl.run()
-            
-        validation_endpoints = {}
-        for ctrl in self._controllers:
-            if ctrl.validation_webhook_endpoint is not None:
-                validation_endpoints[ctrl.validation_webhook_endpoint[0]] = ctrl.validation_webhook_endpoint[1]
-
-        if len(validation_endpoints) > 0:
-            webhook_server = HTTPSWebhookServer(
-                cert_file="/home/jota/Proyectos/kuroboros/cert.pem",
-                key_file="/home/jota/Proyectos/kuroboros/key.pem",
-                endpoints=validation_endpoints
-            )
-            webhook_server_thread = threading.Thread(
-                target=webhook_server.start, name=f"{self.name}-webhook-server"
-            )
-            webhook_server_thread.start()
-            
+        metrics_loop = threading.Thread(
+            target=self._metrics, name=f"{self.name}-metrics", daemon=True
+        )
         metrics_loop.start()
+        op_threads.append(metrics_loop)
+
         self._running = True
+
+        while self._running:
+            for thread in op_threads:
+                if not thread.is_alive():
+                    self._logger.error(f"Thread {thread.name} died unexpectedly")
+                    raise RuntimeError(f"Thread {thread.name} died unexpectedly")
+
+            if not skip_controllers:
+                for ctrl in self._controllers:
+                    for thread in self._controller_threads[ctrl]:
+                        if not thread.is_alive():
+                            self._logger.error(
+                                f"Controller {ctrl.name} thread {thread.name} died unexpectedly"
+                            )
+                            raise RuntimeError(
+                                f"Controller {ctrl.name} thread {thread.name} died unexpectedly"
+                            )
+            time.sleep(1.0)

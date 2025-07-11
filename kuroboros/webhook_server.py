@@ -1,67 +1,86 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from logging import Logger
-from typing import Any, Callable, Dict
+from typing import Any, Dict, List
+
+import falcon
 from kuroboros import logger
 
 
-class WebhookHandler(BaseHTTPRequestHandler):
-    # endpoints: Dict[str, Callable] will be set on the class
-    endpoints: Dict[str, Callable] = {}
-    _logger: Logger = logger.root_logger.getChild(__name__)
-    
-    def log_message(self, format: str, *args: Any) -> None:
-        self._logger.info(f"{self.client_address[0]} - - {format % args}")
+from gunicorn.app.base import BaseApplication
+from gunicorn import glogging
 
-    def do_POST(self):
-        handler = self.endpoints.get(self.path)
-        if handler:
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length) if content_length > 0 else b''
-            response, status, headers = handler(body)
-            self.send_response(status)
-            for k, v in (headers or {}).items():
-                self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(response)
-        else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b'Endpoint not found')
+from kuroboros.webhook import BaseValidationWebhook
+
+class InjectedLogger(glogging.Logger):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        
+    def setup(self, cfg):
+        logg = logger.root_logger.getChild(__name__)
+        self.error_log = logg.getChild("gunicorn")
+        self.access_log = logg.getChild("gunicorn.access")
+        pass
+
+
+class GunicornApp(BaseApplication):
+    
+    def __init__(self, app, options=None):
+        self.application = app
+        self.options = options or {}
+        super().__init__()
+
+    def load_config(self):
+        if self.cfg is not None:
+            for key, value in self.options.items():
+                self.cfg.set(key.lower(), value)
+            
+            self.cfg.set("logger_class", InjectedLogger)        
+        
+        
+    def access(self, res, req, environ, req_time):
+        self.application.access_log.info(
+            f"{req.method} {req.path} {res.status} {req_time:.3f}s "
+            f"{environ.get('REMOTE_ADDR', 'unknown')}"
+        )
+                
+
+    def load(self):
+        return self.application
 
 
 class HTTPSWebhookServer:
-    cert_file: str
-    key_file: str
     port: int
     host: str
-    _handler = WebhookHandler
-    _server: HTTPServer
+    _endpoints: List[BaseValidationWebhook]
+    _falcon: falcon.App
+    _server: GunicornApp
+    _server_options: Dict[str, Any]
     _logger = logger.root_logger.getChild(__name__)
 
-    def __init__(self, cert_file: str, key_file: str, endpoints: Dict[str, Callable], port: int = 443, host: str = "0.0.0.0") -> None:
-        self.cert_file = cert_file
-        self.key_file = key_file
+    def __init__(self, cert_file: str, key_file: str, endpoints: List[BaseValidationWebhook], port: int = 443, host: str = "0.0.0.0", workers: int = 4) -> None:
         self.port = port
         self.host = host
-        self._handler.endpoints = endpoints
-        self._server = HTTPServer((self.host, self.port), WebhookHandler)
+        
+        self._falcon = falcon.App()
+        self._endpoints = endpoints
+        self._server_options = {
+            "bind": f"{self.host}:{self.port}",
+            "workers": workers,
+            "certfile": cert_file,
+            "keyfile": key_file,
+            "worker_class": "sync",
+            
+        }
+        self._server = GunicornApp(self._falcon, self._server_options)
+        
 
     def start(self) -> None:
-        import ssl
-        self._logger.info(f"Starting webhook server on {self.host}:{self.port} with cert {self.cert_file} and key {self.key_file}")
-        try:
-            # Wrap the socket with SSL
-            self._server.socket = ssl.wrap_socket(
-                self._server.socket,
-                server_side=True,
-                certfile=self.cert_file,
-                keyfile=self.key_file,
-                ssl_version=ssl.PROTOCOL_TLS_SERVER
-            )
-            self._server.serve_forever()
-        except Exception as e:
-            self._logger.error(f"Error starting webhook server: {e}")
-        finally:
-            self._server.server_close()
-            self._logger.info("Webhook server closed")
-
+        self._logger.info(f"starting webhook server on {self.host}:{self.port}")
+        self._logger.info(f"using cert file: {self._server_options.get('certfile')}")
+        self._logger.info(f"using key file: {self._server_options.get('keyfile')}")
+        for webhook in self._endpoints:
+            self._logger.info(f"registering endpoint: {webhook.name} at {webhook.endpoint}")
+            self._falcon.add_route(webhook.endpoint, webhook)
+            
+        self._server.run()
+        
+        
