@@ -19,6 +19,7 @@ rbac_operator_role_template = temps.env.get_template("generate/rbac/operator-rol
 rbac_operator_role_binding_template = temps.env.get_template("generate/rbac/operator-role-binding.yaml.j2")
 rbac_leader_election_role_template = temps.env.get_template("generate/rbac/leader-election-role.yaml.j2")
 rbac_leader_election_role_binding_template = temps.env.get_template("generate/rbac/leader-election-role-binding.yaml.j2")
+webhook_configs = temps.env.get_template("generate/webhooks/validation-webhook-config.yaml.j2")
 kustomization_template = temps.env.get_template("generate/kustomization.yaml.j2")
 
 def crd_schema(versions: Dict[str, BaseCRD], group_version_info: GroupVersionInfo) -> str:
@@ -132,6 +133,17 @@ def operator_config(config_file: str) -> str:
 
     return deployment_config_template.render(name=get_operator_name(), config=operator_config)
     
+
+def validation_webhook_config(controllers: List[ControllerConfig]) -> str:
+    """
+    Generates the `ValidatingWebhookConfiguration` for the controllers
+    """
+    gvis = []
+    for ctrl in controllers:
+        gvi = ctrl.group_version_info
+        gvis.append(gvi)
+
+    return webhook_configs.render(name=get_operator_name(), gvis=gvis)
 
 def kustomize_file(resources: list[str], images: list[dict] = []):
     return kustomization_template.render(resources=resources, images=images)

@@ -23,12 +23,18 @@ class ControllerConfigVersions:
     reconciler: BaseReconciler | None = None
     crd: BaseCRD | None = None
     validation_webhook: BaseValidationWebhook | None = None
+    
+    def has_webhooks(self) -> bool:
+        return self.validation_webhook is not None
 
 
 class ControllerConfig:
     name: str
     group_version_info: GroupVersionInfo
     versions: List[ControllerConfigVersions] = []
+    
+    def has_webhooks(self) -> bool:
+        return self.get_run_version().has_webhooks()
 
     def get_run_version(self):
         """

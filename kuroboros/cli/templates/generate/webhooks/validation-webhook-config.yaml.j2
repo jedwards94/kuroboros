@@ -1,0 +1,29 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ name }}-validation-webhook
+webhooks:
+{%- for gvi in gvis %}
+  - name: {{ gvi.crd_name }}-validation-webhook
+    clientConfig:
+      service:
+        name: {{ name }}-webhook
+        namespace: {{ name }}
+        path: /{{ gvi.api_version }}/{{ gvi.singular }}/validate
+      caBundle: {{ ca_bundle | default('<REPLACE_ME>') }}
+    rules:
+      - apiGroups:
+          - {{ gvi.group }}
+        apiVersions:
+          - {{ gvi.api_version }}
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - {{ gvi.plural }}
+        scope: {{ gvi.scope }}
+    admissionReviewVersions: [ {{ gvi.api_version }} ]
+    sideEffects: None
+    failurePolicy: Fail
+{%- endfor %}

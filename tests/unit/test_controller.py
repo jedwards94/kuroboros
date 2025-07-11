@@ -81,10 +81,8 @@ class TestController(unittest.TestCase):
             ctrl = Controller("dummy-controller", group_version_info(), reconciler(), webhook())
             self.assertIsInstance(ctrl, Controller)
             
-            try:
+            with self.assertRaises(RuntimeError):
                 Controller("dummy-controller", group_version_info(), reconciler(), fail_webhook())
-            except RuntimeError as e:
-                self.assertIn("The validation webhook type must match the reconciler type", str(e))
             
         
 

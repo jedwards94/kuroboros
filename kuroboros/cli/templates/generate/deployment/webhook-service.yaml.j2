@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ name }}-webhook
+  namespace: {{ name }}
+  labels:
+    app: {{ name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+      name: webhook
+  selector:
+    app: {{ name }}

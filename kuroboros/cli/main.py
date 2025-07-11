@@ -14,6 +14,7 @@ from kuroboros.cli.generate import (
     rbac_operator_role,
     rbac_operator_role_binding,
     rbac_sa,
+    validation_webhook_config
 )
 
 from kuroboros.cli.new import (
@@ -37,6 +38,7 @@ KUSTOMIZE_OUT = "config/base"
 KUSTOMIZE_OVERLAYS = "config/overlays"
 CRD_OUT = "crd"
 RBAC_OUT = "rbac"
+WEBHOOKS_OUT = "webhooks"
 DEPLOYMENT_OUT = "deployment"
 
 sys.path.insert(0, str(Path().absolute()))
@@ -116,6 +118,24 @@ def rbac():
     create_file(output, "leader-election-role-binding.yaml", rbac_leader_role_binding())
     create_file(output, "kustomization.yaml", kustomize_file(resources))
 
+@generate.command(help="Generates the Webhooks YAML manifests")
+def webhooks():
+    click.echo("🌀 Generating Webhooks YAMLs")
+    click.echo(f"{KUSTOMIZE_OUT}/{WEBHOOKS_OUT}/")
+    output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, WEBHOOKS_OUT)
+
+    resources = [
+        "validation-webhooks.yaml",
+    ]
+    
+    ctrls_with_webhooks = [ctrl for ctrl in controllers if ctrl.has_webhooks()]
+
+    if len(ctrls_with_webhooks) > 0:
+        create_file(output, "validation-webhooks.yaml", validation_webhook_config(ctrls_with_webhooks))
+        create_file(output, "kustomization.yaml", kustomize_file(resources))
+    else:
+        click.echo("Nothing to create")
+
 
 @generate.command(help="Generates the Deployment YAML manifests")
 @click.pass_context
@@ -155,6 +175,7 @@ def manifests(ctx):
     ctx.invoke(crd)
     ctx.invoke(rbac)
     ctx.invoke(deployment)
+    ctx.invoke(webhooks)
 
 
 @generate.command(help="Generate a new overlay in config/overlays")
@@ -162,10 +183,13 @@ def manifests(ctx):
 def overlay(name):
     click.echo(f"🌀 Creating new overlay {name}")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OVERLAYS, name)
+    paths = ["../../base/rbac", "../../base/crd", "../../base/deployment"]
+    for ctrl in controllers:
+        if ctrl.has_webhooks():
+            paths.append("../../base/webhooks")
+            break
 
-    file = kustomize_file(
-        ["../../base/rbac", "../../base/crd", "../../base/deployment"]
-    )
+    file = kustomize_file(paths)
     create_file(output, "kustomization.yaml", file)
 
 

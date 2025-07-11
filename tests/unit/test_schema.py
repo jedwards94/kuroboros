@@ -32,10 +32,8 @@ class TestInit(unittest.TestCase):
             typed_prop = cast(CRDProp, prop(supported_type))
             self.assertEqual(typed_prop.typ, supported_types[supported_type])
 
-        try:
-            typed_prop = cast(CRDProp, prop(list[object]))
-        except Exception as e:
-            self.assertIsInstance(e, TypeError)
+        with self.assertRaises(TypeError):
+            cast(CRDProp, prop(object))
 
     def test_load_data(self):
         inst = TestCrd()
@@ -107,18 +105,14 @@ class TestInstance(unittest.TestCase):
         inst = TestCrd(group_version=test_api_group)
         inst.load_data(data)
 
-        try:
+        with self.assertRaises(RuntimeError):
             inst.patch()
-        except Exception as e:
-            self.assertIsInstance(e, RuntimeError)
         
         inst = TestCrd(api=client.CustomObjectsApi())
         inst.load_data(data)
 
-        try:
+        with self.assertRaises(RuntimeError):
             inst.patch()
-        except Exception as e:
-            self.assertIsInstance(e, RuntimeError)
         
 
         
