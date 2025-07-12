@@ -14,6 +14,8 @@ temps.env.filters["yaml"] = yaml_format
 crd_template = temps.env.get_template("generate/crd/crd.yaml.j2")
 deployment_template = temps.env.get_template("generate/deployment/operator-deployment.yaml.j2")
 deployment_config_template = temps.env.get_template("generate/deployment/operator-config.yaml.j2")
+deployment_metrics_service = temps.env.get_template("generate/deployment/metrics-service.yaml.j2")
+deployment_webhook_service = temps.env.get_template("generate/deployment/webhook-service.yaml.j2")
 rbac_sa_template = temps.env.get_template("generate/rbac/service-account.yaml.j2")
 rbac_operator_role_template = temps.env.get_template("generate/rbac/operator-role.yaml.j2")
 rbac_operator_role_binding_template = temps.env.get_template("generate/rbac/operator-role-binding.yaml.j2")
@@ -118,6 +120,19 @@ def operator_deployment() -> str:
     """
     return deployment_template.render(name=get_operator_name())
 
+def operator_metrics_service() -> str:
+    """
+    Generates the `Service` for the operator metrics.
+    The service is used to expose the operator's metrics server
+    """
+    return deployment_metrics_service.render(name=get_operator_name())
+
+def operator_webhook_service() -> str:
+    """
+    Generates the `Service` for the operator webhook.
+    The service is used to expose the operator's webhook server
+    """
+    return deployment_webhook_service.render(name=get_operator_name())
 
 def operator_config(config_file: str) -> str:
     """

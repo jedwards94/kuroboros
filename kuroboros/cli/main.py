@@ -9,6 +9,8 @@ from kuroboros.cli.generate import (
     kustomize_file,
     operator_config,
     operator_deployment,
+    operator_metrics_service,
+    operator_webhook_service,
     rbac_leader_role,
     rbac_leader_role_binding,
     rbac_operator_role,
@@ -145,7 +147,11 @@ def deployment(ctx):
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, DEPLOYMENT_OUT)
 
     config_file = ctx.obj["config_file"]
-    resources = ["operator-deployment.yaml", "operator-config.yaml"]
+    resources = ["operator-deployment.yaml", "operator-config.yaml", "metrics-service.yaml"]
+    include_webhook_service = False
+    for ctrl in controllers:
+        if ctrl.has_webhooks():
+            include_webhook_service = True
     image_config = []
     if "generate.deployment.image" in config.sections():
         reg = config.get("generate.deployment.image", "registry", fallback="")
@@ -164,6 +170,10 @@ def deployment(ctx):
             }
         ]
 
+    if include_webhook_service:
+            create_file(output, "webhook-service.yaml", operator_webhook_service()) 
+            resources.append("webhook-service.yaml")
+    create_file(output, "metrics-service.yaml", operator_metrics_service())
     create_file(output, "operator-deployment.yaml", operator_deployment())
     create_file(output, "operator-config.yaml", operator_config(config_file))
     create_file(output, "kustomization.yaml", kustomize_file(resources, image_config))

@@ -21,6 +21,7 @@ setup(
         "prometheus-client==0.21.1",
         "docker==7.1.0",
         "falcon==4.0.2",
-        "gunicorn==23.0.0"
+        "gunicorn==23.0.0",
+        "cryptography==45.0.5"
     ],
 )

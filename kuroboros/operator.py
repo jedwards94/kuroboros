@@ -16,6 +16,7 @@ from kuroboros.config import (
 from kuroboros.controller import Controller
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
+from kuroboros.utils import create_tls_files
 from kuroboros.webhook import BaseValidationWebhook
 from kuroboros.webhook_server import HTTPSWebhookServer
 
@@ -30,9 +31,9 @@ class Operator:
         kuroboros_config.getint("operator", "metrics_port", fallback=8080)
     )
     __CERT_PATH = kuroboros_config.get(
-        "operator", "cert_path", fallback="/etc/cert.pem"
+        "operator", "cert_path", fallback="tls/cert.pem"
     )
-    __KEY_PATH = kuroboros_config.get("operator", "key_path", fallback="/etc/key.pem")
+    __KEY_PATH = kuroboros_config.get("operator", "key_path", fallback="tls/key.pem")
     __WEBHOOK_PORT = int(
         kuroboros_config.getint("operator", "webhook_port", fallback=443)
     )
@@ -215,11 +216,19 @@ class Operator:
                 ctrl_threads = ctrl.run()
                 self._controller_threads[ctrl] = ctrl_threads
 
+
+        # Start the webhook server if needed
         if not skip_webhook_server:
             webhooks = []
             for ctrl in self._controllers:
                 if ctrl.validation_webhook is not None:
                     webhooks.append(ctrl.validation_webhook)
+                    
+            create_tls_files(
+                cert_path=self.__CERT_PATH,
+                key_path=self.__KEY_PATH,
+                service_dns=f"{self.name}.{self._namespace}.svc",
+            )
 
             if len(webhooks) > 0:
                 webhook_server = HTTPSWebhookServer(
