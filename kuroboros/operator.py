@@ -44,6 +44,8 @@ class Operator:
     _is_leader: threading.Event
     _threads_by_reconciler: Dict[BaseReconciler, Gauge]
     _stop: threading.Event
+    _threads: List[threading.Thread]
+    _processes: List[multiprocessing.Process]
 
     _namespace: str
     name = get_operator_name()
@@ -119,7 +121,7 @@ class Operator:
         lease_name = f"{self.name}-leader"
         lease_duration = 10
         self._logger.info(f"trying to acquire leadership with uid: {self._uid}")
-        while True:
+        while not self._stop.is_set():
             try:
                 lease = api.read_namespaced_lease(
                     name=lease_name, namespace=self._namespace
@@ -144,8 +146,7 @@ class Operator:
 
                 else:
                     self._logger.error(
-                        "error while trying to acquire leadership lease",
-                        e,
+                        f"error while trying to acquire leadership lease: {e}",
                         exc_info=True,
                     )
                     raise RuntimeError("Error while acquiring leadership")
@@ -198,28 +199,8 @@ class Operator:
         if len(self._controllers) == 0:
             raise RuntimeError("no controllers found to run the operator")
 
-        op_threads = []
-
-        if not skip_controllers:
-            self._is_leader.clear()
-            leader_election = threading.Thread(
-                target=self._acquire_leader_lease,
-                name=f"{self.name}-leader-election",
-                daemon=True,
-            )
-            op_threads.append(leader_election)
-            leader_election.start()
-            while not self.is_leader():
-                if not leader_election.is_alive():
-                    raise RuntimeError(
-                        "leader election loop died while trying to acquire leadership"
-                    )
-                continue
-
-            for ctrl in self._controllers:
-                ctrl_threads = ctrl.run()
-                self._controller_threads[ctrl] = ctrl_threads
-
+        op_threads: List[threading.Thread] = []
+        op_processes: List[multiprocessing.Process] = []
 
         # Start the webhook server if needed
         if not skip_webhook_server:
@@ -243,8 +224,32 @@ class Operator:
                     name=f"{self.name}-webhook-server-process",
                 )
                 webhook_server_process.start()
-                op_threads.append(webhook_server_process)
+                op_processes.append(webhook_server_process)
 
+
+        # Start controllers
+        if not skip_controllers:
+            self._is_leader.clear()
+            leader_election = threading.Thread(
+                target=self._acquire_leader_lease,
+                name=f"{self.name}-leader-election",
+                daemon=True,
+            )
+            op_threads.append(leader_election)
+            leader_election.start()
+            while not self.is_leader():
+                if not leader_election.is_alive():
+                    raise RuntimeError(
+                        "leader election loop died while trying to acquire leadership"
+                    )
+                continue
+
+            for ctrl in self._controllers:
+                ctrl_threads = ctrl.run()
+                self._controller_threads[ctrl] = ctrl_threads
+
+
+        # start metrics maybe
         try:
             start_http_server(self.__METRICS_PORT)
         except Exception:
@@ -254,16 +259,25 @@ class Operator:
         )
         metrics_loop.start()
         op_threads.append(metrics_loop)
-
+        
+        self._threads = op_threads
+        self._processes = op_processes
         self._running = True
         
+        # handle stop
         signal.signal(signal.SIGINT, self.signal_stop)
-
+        
+        # handle crash
         while self._running:
             for thread in op_threads:
                 if not thread.is_alive():
                     self._logger.error(f"Thread {thread.name} died unexpectedly")
-                    raise RuntimeError(f"Thread {thread.name} died unexpectedly")
+                    raise threading.ThreadError("Death thread")
+                
+            for process in self._processes:
+                if not process.is_alive():
+                    self._logger.error(f"Thread {process.name} died unexpectedly")
+                    raise multiprocessing.ProcessError("Death process")
 
             if not skip_controllers:
                 for ctrl in self._controllers:
@@ -272,17 +286,25 @@ class Operator:
                             self._logger.error(
                                 f"Controller {ctrl.name} thread {thread.name} died unexpectedly"
                             )
-                            raise RuntimeError(
-                                f"Controller {ctrl.name} thread {thread.name} died unexpectedly"
-                            )
+                            raise threading.ThreadError("Death thread")
             event_aware_sleep(self._stop, 1)
+        
+        self._logger.info(f"good bye!")
+        
 
     def signal_stop(self, sig, _):
-        self._logger.info(f"signal {sig} received")
-        self._logger.info("gracefully shutting down") 
-        self._stop.set()
-        for ctrl in self._controllers:
-            ctrl.stop()
-        
+        self._logger.warning(f"{signal.Signals(sig).name} received")
+        if sig == 2: # SIGINT
+            self._logger.warning("trying to gracefully shutdown...") 
+            for ctrl in self._controllers:
+                ctrl.stop()
+                
+            alive_threads = self._threads
+            self._logger.info(f"waiting for {len(alive_threads)} threads in the operator to stop...")
+            self._stop.set()
+            while len(alive_threads) > 0:
+                alive_threads = [thread for thread in self._threads if thread.is_alive() and isinstance(thread, threading.Thread)]
+                time.sleep(0.5)
+
         self._running = False
-        self._logger.info(f"operator {self.name} succesfully stopped, good bye!") 
+        

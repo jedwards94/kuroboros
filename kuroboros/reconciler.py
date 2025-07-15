@@ -16,6 +16,8 @@ T = TypeVar("T", bound=BaseCRD)
 class BaseReconciler(Generic[T]):
 
     reconcile_timeout: timedelta | None = None
+    timeout_retry: bool = False
+    timeout_requeue_time: timedelta | None = timedelta(minutes=5)
 
     __api: client.CustomObjectsApi
 
@@ -84,46 +86,48 @@ class BaseReconciler(Generic[T]):
                         object=inst,
                     )
                 inst_logger.removeFilter(filt)
-                del inst_logger
-                del inst
 
-            except Exception as e:
-                if isinstance(e, client.ApiException):
-                    if e.status == 404:
-                        self._logger.info(
-                            f"{object} no longer found, killing thread"
-                        )
-                        return
-                elif isinstance(e, UnrecoverableException):
-                    self._logger.fatal(
-                        f"A `UnrecoverableException` ocurred while proccessing {object}",
-                        e,
-                        exc_info=True,
-                    )
-                    break
-                elif isinstance(e, RetriableException):
-                    self._logger.warning(
-                        f"A `RetriableException` ocurred while proccessing {object}",
-                        e,
-                    )
-                    interval = e.backoff
-                    continue
+            except client.ApiException as e:
+                if e.status == 404:
+                    self._logger.info(f"{object} no longer found, killing thread")
                 else:
-                    self._logger.error(
-                        f"An `Exception` ocurred while proccessing {object}",
-                        e,
+                    self._logger.fatal(
+                        f"A `APIException` ocurred while proccessing {object}: {e}",
                         exc_info=True,
                     )
-                    continue
+            except UnrecoverableException as e:
+                self._logger.fatal(
+                    f"A `UnrecoverableException` ocurred while proccessing {object}: {e}",
+                    exc_info=True,
+                )
+            except RetriableException as e:
+                self._logger.warning(
+                    f"A `RetriableException` ocurred while proccessing {object}: {e}",
+                )
+                interval = e.backoff
+            except TimeoutError as e:
+                self._logger.warning(
+                    f"A `TimeoutError` ocurred while proccessing {object}: {e}",
+                )
+                if not self.timeout_retry:
+                    self._logger.warning(
+                        f"`TimeoutError` will not be retried. To retry, enable `timeout_rety = True` in {self.__class__.__name__}",
+                    )
+                else:
+                    interval = self.timeout_requeue_time
+            except Exception as e:
+                self._logger.error(
+                    f"An `Exception` ocurred while proccessing {object}: {e}",
+                    exc_info=True,
+                )
             finally:
                 if interval is not None:
                     assert isinstance(interval, timedelta)
                     event_aware_sleep(stop, interval.total_seconds())
                 else:
                     break
-        self._logger.info(
-            f"{object} reconcile loop stopped"
-        )
+        self._logger.info(f"{object} reconcile loop stopped")
+        return
 
     def reconcile(self, logger: Logger, object: T) -> None | timedelta:
         """

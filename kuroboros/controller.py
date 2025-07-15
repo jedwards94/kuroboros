@@ -183,6 +183,9 @@ class Controller:
         if namespace_name not in self._members:
             return
         self._members.pop(namespace_name)[1].set()
+        self._logger.info(
+            f"{self._group_version_info.pretty_kind_str(namespace_name)} CR removed until further events"
+        )
 
     def _get_current_cr_list(self, api: client.CustomObjectsApi) -> List[Any]:
         """
@@ -222,7 +225,7 @@ class Controller:
             crd_type: type[BaseCRD] = self.reconciler.crd_type
             current_crs = self._get_current_cr_list(api)
             for pending in current_crs:
-                crd_inst: BaseCRD = crd_type(api)
+                crd_inst: BaseCRD = crd_type(api=api, group_version=self._group_version_info)
                 crd_inst.load_data(data=pending)
                 self._add_member(crd_inst)
             self._logger.info(
@@ -230,8 +233,7 @@ class Controller:
             )
         except Exception as e:
             self._logger.error(
-                f"error while preloading {self._group_version_info.pretty_kind_str()} CR",
-                e,
+                f"error while preloading {self._group_version_info.pretty_kind_str()} CR: {e}",
                 exc_info=True,
             )
             raise e
@@ -267,17 +269,17 @@ class Controller:
                         )
                     else:
                         self._logger.error(
-                            f"unexpected api error ocurred while watching pending_remove {self._group_version_info.pretty_kind_str((namespace, name))} CR",
-                            e,
+                            f"unexpected api error ocurred while watching pending_remove {self._group_version_info.pretty_kind_str((namespace, name))} CR: {e}",
                             exc_info=True,
                         )
                         raise e
 
-            defunct_members = []
+            death_members = []
             for namespace_name, (thread, _) in self._members.items():
                 if not thread.is_alive():
-                    defunct_members.append(namespace_name)
-            for m in defunct_members:
+                    death_members.append(namespace_name)
+            self._logger.debug(f"{len(death_members)} death members found")
+            for m in death_members:
                 self._remove_member(m)
 
             event_aware_sleep(self._stop, self.__CLEANUP_INTERVAL)
@@ -322,15 +324,13 @@ class Controller:
 
                 except Exception as e:
                     self._logger.warning(
-                        f"an Exception ocurred while streaming {self._group_version_info.pretty_kind_str()} events",
-                        e,
+                        f"an Exception ocurred while streaming {self._group_version_info.pretty_kind_str()} events: {e}",
                         exc_info=True,
                     )
                     continue
         except Exception as e:
             self._logger.error(
-                f"error while watching {self._group_version_info.pretty_kind_str()}",
-                e,
+                f"error while watching {self._group_version_info.pretty_kind_str()}: {e}",
                 exc_info=True,
             )
             pass
