@@ -8,7 +8,7 @@ from kuroboros import logger
 from gunicorn.app.base import BaseApplication
 from gunicorn import glogging
 
-from kuroboros.webhook import BaseValidationWebhook
+from kuroboros.webhook import BaseValidationWebhook, BaseWebhook
 
 class InjectedLogger(glogging.Logger):
     def __init__(self, cfg):
@@ -50,13 +50,13 @@ class GunicornApp(BaseApplication):
 class HTTPSWebhookServer:
     port: int
     host: str
-    _endpoints: List[BaseValidationWebhook]
+    _endpoints: List[BaseWebhook]
     _falcon: falcon.App
     _server: GunicornApp
     _server_options: Dict[str, Any]
     _logger = logger.root_logger.getChild(__name__)
 
-    def __init__(self, cert_file: str, key_file: str, endpoints: List[BaseValidationWebhook], port: int = 443, host: str = "0.0.0.0", workers: int = 4) -> None:
+    def __init__(self, cert_file: str, key_file: str, endpoints: List[BaseWebhook], port: int = 443, host: str = "0.0.0.0", workers: int = 4) -> None:
         self.port = port
         self.host = host
         

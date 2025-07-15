@@ -51,6 +51,24 @@ class TestInit(unittest.TestCase):
         assert inst.status is not None
         self.assertIsNotNone(inst.metadata)
         self.assertDictEqual(inst.status, {"some": "thing"})
+        
+    def test_load_data_by_value(self):
+        data_1 = {
+            "metadata": {
+                "name": "test"
+            },
+            "spec": {
+                "test_field": "test"
+            }
+        }
+        inst_1 = TestCrd(data=data_1)
+        inst_2 = TestCrd(data=data_1)
+        
+        inst_1.test_field = "test2"
+        
+        self.assertNotEqual(inst_1.get_data(), inst_2.get_data())
+        
+        
 
 
 

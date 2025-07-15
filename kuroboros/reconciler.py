@@ -40,8 +40,6 @@ class BaseReconciler(Generic[T]):
                 "Subclass BaseReconciler with a concrete type (e.g., `class MyReconciler(BaseReconciler[MyCRD]): ...`)"
             )
 
-        
-
         self._type = t_type
 
     @property
@@ -52,7 +50,11 @@ class BaseReconciler(Generic[T]):
     def api(self, value):
         self.__api = value
 
-    def _reconcile(self, object: T, stop: threading.Event):
+    @property
+    def crd_type(self) -> Type[T]:
+        return self._type
+
+    def reconcilation_loop(self, object: T, stop: threading.Event):
         """
         Runs the reconciliation loop of every object
         while its a member of the `Controller`
@@ -67,7 +69,9 @@ class BaseReconciler(Generic[T]):
                     namespace=object.namespace,
                     plural=self._group_version_info.plural,
                 )
-                inst = self._type(api=self.__api, group_version=self._group_version_info)
+                inst = self._type(
+                    api=self.__api, group_version=self._group_version_info
+                )
                 inst.load_data(latest)
                 inst_logger, filt = reconciler_logger(self._group_version_info, inst)
                 if self.reconcile_timeout is None:
@@ -80,43 +84,45 @@ class BaseReconciler(Generic[T]):
                         object=inst,
                     )
                 inst_logger.removeFilter(filt)
+                del inst_logger
+                del inst
 
             except Exception as e:
                 if isinstance(e, client.ApiException):
                     if e.status == 404:
                         self._logger.info(
-                            f"{self._type.__name__} {object.namespace_name} no longer found, killing thread"
+                            f"{object} no longer found, killing thread"
                         )
                         return
                 elif isinstance(e, UnrecoverableException):
                     self._logger.fatal(
-                        f"A `UnrecoverableException` ocurred while proccessing {object.namespace_name}",
+                        f"A `UnrecoverableException` ocurred while proccessing {object}",
                         e,
                         exc_info=True,
                     )
                     break
                 elif isinstance(e, RetriableException):
                     self._logger.warning(
-                        f"A `RetriableException` ocurred while proccessing {object.namespace_name}",
+                        f"A `RetriableException` ocurred while proccessing {object}",
                         e,
                     )
                     interval = e.backoff
                     continue
                 else:
                     self._logger.error(
-                        f"An `Exception` ocurred while proccessing {object.namespace_name}",
+                        f"An `Exception` ocurred while proccessing {object}",
                         e,
                         exc_info=True,
                     )
                     continue
             finally:
                 if interval is not None:
-                    assert(isinstance(interval, timedelta))
+                    assert isinstance(interval, timedelta)
                     event_aware_sleep(stop, interval.total_seconds())
                 else:
                     break
         self._logger.info(
-            f"{self._type.__name__} {object.namespace_name} reconcile loop stopped"
+            f"{object} reconcile loop stopped"
         )
 
     def reconcile(self, logger: Logger, object: T) -> None | timedelta:

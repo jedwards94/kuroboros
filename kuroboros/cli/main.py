@@ -7,6 +7,7 @@ from kuroboros.cli.build import docker_build
 from kuroboros.cli.generate import (
     crd_schema,
     kustomize_file,
+    mutation_webhook_config,
     operator_config,
     operator_deployment,
     operator_metrics_service,
@@ -126,14 +127,18 @@ def webhooks():
     click.echo(f"{KUSTOMIZE_OUT}/{WEBHOOKS_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, WEBHOOKS_OUT)
 
-    resources = [
-        "validation-webhooks.yaml",
-    ]
-    
-    ctrls_with_webhooks = [ctrl for ctrl in controllers if ctrl.has_webhooks()]
+    resources = []
+    ctrls_with_validation_webhooks = [ctrl for ctrl in controllers if ctrl.validation_webhook is not None]
+    ctrls_with_mutation_webhooks = [ctrl for ctrl in controllers if ctrl.mutation_webhook is not None]
 
-    if len(ctrls_with_webhooks) > 0:
-        create_file(output, "validation-webhooks.yaml", validation_webhook_config(ctrls_with_webhooks))
+    if len(ctrls_with_validation_webhooks) > 0:
+        create_file(output, "validation-webhooks.yaml", validation_webhook_config(ctrls_with_validation_webhooks))
+        resources.append("validation-webhooks.yaml")
+    
+    if len(ctrls_with_validation_webhooks) > 0:
+        create_file(output, "mutation-webhooks.yaml", mutation_webhook_config(ctrls_with_mutation_webhooks))
+        resources.append("mutation-webhooks.yaml")
+    if len(resources) > 0:
         create_file(output, "kustomization.yaml", kustomize_file(resources))
     else:
         click.echo("Nothing to create")
@@ -302,6 +307,7 @@ def start(skip_controllers, skip_webhook_server):
                 group_version=ctrl.group_version_info,
                 reconciler=run_version.reconciler,
                 validation_webhook=run_version.validation_webhook,
+                mutation_webhook=run_version.mutation_webhook,
             )
 
         except Exception as e:

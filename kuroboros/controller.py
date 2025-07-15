@@ -1,5 +1,5 @@
 from logging import Logger
-from typing import Any, Callable, Dict, List, MutableMapping, Tuple, cast
+from typing import Any, Dict, List, MutableMapping, Tuple, cast
 import time
 import threading
 from kubernetes import client, watch
@@ -9,7 +9,8 @@ from kuroboros.config import config
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
 from kuroboros.schema import BaseCRD
-from kuroboros.webhook import BaseValidationWebhook
+from kuroboros.utils import event_aware_sleep
+from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook
 
 
 class EventEnum:
@@ -23,18 +24,33 @@ class ControllerConfigVersions:
     reconciler: BaseReconciler | None = None
     crd: BaseCRD | None = None
     validation_webhook: BaseValidationWebhook | None = None
-    
+    mutation_webhook: BaseMutationWebhook | None = None
+
     def has_webhooks(self) -> bool:
-        return self.validation_webhook is not None
+        return self.validation_webhook is not None or self.mutation_webhook is not None
 
 
 class ControllerConfig:
     name: str
     group_version_info: GroupVersionInfo
     versions: List[ControllerConfigVersions] = []
-    
+
     def has_webhooks(self) -> bool:
         return self.get_run_version().has_webhooks()
+    
+    @property
+    def validation_webhook(self) -> BaseValidationWebhook | None:
+        """
+        Returns the validation webhook for the current version
+        """
+        return self.get_run_version().validation_webhook
+    
+    @property
+    def mutation_webhook(self) -> BaseMutationWebhook | None:
+        """
+        Returns the mutation webhook for the current version
+        """
+        return self.get_run_version().mutation_webhook
 
     def get_run_version(self):
         """
@@ -53,11 +69,18 @@ class Controller:
     _logger: Logger = logger.root_logger.getChild(__name__)
     _members: MutableMapping[Tuple[str, str], Tuple[threading.Thread, threading.Event]]
     _pending_remove: List[Tuple[str, str]]
-
-    _reconciler: BaseReconciler
     _group_version_info: GroupVersionInfo
-    _validation_webhook: BaseValidationWebhook | None
+    _stop: threading.Event
+    _watcher: watch.Watch
+    
+    _watcher_loop: threading.Thread
+    _cleanup_loop: threading.Thread
+
+    reconciler: BaseReconciler
+    validation_webhook: BaseValidationWebhook | None
+    mutation_webhook: BaseMutationWebhook | None
     name: str
+    
 
     @property
     def threads(self) -> int:
@@ -66,54 +89,35 @@ class Controller:
         """
         return len(self._members)
 
-    @property
-    def reconciler(self) -> BaseReconciler:
-        """
-        Returns the reconciler of the controller
-        """
-        return self._reconciler
-    
-    
-    @property
-    def has_validation_webhook(self,) -> bool:
-        return self._validation_webhook is not None
-        
-    
-    @property
-    def validation_webhook(self) -> BaseValidationWebhook | None:
-        """
-        Returns the endpoint of the validation webhook if it exists
-        """
-        if self._validation_webhook is not None:
-            return self._validation_webhook
-        return None
-
     def __init__(
         self,
         name: str,
         group_version_info: GroupVersionInfo,
         reconciler: BaseReconciler,
         validation_webhook: BaseValidationWebhook | None = None,
+        mutation_webhook: BaseMutationWebhook | None = None,
     ) -> None:
-        
-        if validation_webhook is not None and reconciler._type != validation_webhook._type:
+
+        if (
+            validation_webhook is not None
+            and reconciler.crd_type != validation_webhook.crd_type
+        ):
             raise RuntimeError(
                 "The validation webhook type must match the reconciler type"
             )
-        
+
         self._group_version_info = group_version_info
-        major = group_version_info.major
-        stability = group_version_info.stability.capitalize()
-        minor = (
-            group_version_info.minor if group_version_info.minor != 0 else ""
+        self.name = (
+            f"{name.capitalize()}{group_version_info.pretty_version_str()}Controller"
         )
-        self.name = f"{name.capitalize()}V{major}{stability}{minor}Controller"
         self._logger = self._logger.getChild(self.name)
-        self._reconciler = reconciler
+        self.reconciler = reconciler
         self._check_permissions()
         self._members = {}
         self._pending_remove = []
-        self._validation_webhook = validation_webhook
+        self.validation_webhook = validation_webhook
+        self.mutation_webhook = mutation_webhook
+        self._stop = threading.Event()
 
     def _check_permissions(self):
         api = client.AuthorizationV1Api()
@@ -147,10 +151,10 @@ class Controller:
         """
         if crd.namespace_name in self._members:
             return
-        self._reconciler.api = client.CustomObjectsApi()
+        self.reconciler.api = client.CustomObjectsApi()
         event = threading.Event()
         thread_loop = threading.Thread(
-            target=self._reconciler._reconcile,
+            target=self.reconciler.reconcilation_loop,
             args=(crd, event),
             daemon=True,
             name=f"{self.name}-{crd.namespace_name}",
@@ -158,7 +162,7 @@ class Controller:
         thread_loop.start()
         self._members[crd.namespace_name] = (thread_loop, event)
         self._logger.info(
-            f"<{self._group_version_info.crd_name}> {crd.namespace_name} added as member"
+            f"{self._group_version_info.pretty_kind_str(crd.namespace_name)} added as member"
         )
 
     def _add_pending_remove(self, namespace_name: Tuple[str, str]):
@@ -169,7 +173,7 @@ class Controller:
             return
         self._pending_remove.append(namespace_name)
         self._logger.info(
-            f"<{self._group_version_info.crd_name}> {namespace_name} CR added as pending_remove"
+            f"{self._group_version_info.pretty_kind_str(namespace_name)} CR added as pending_remove"
         )
 
     def _remove_member(self, namespace_name: Tuple[str, str]):
@@ -179,9 +183,6 @@ class Controller:
         if namespace_name not in self._members:
             return
         self._members.pop(namespace_name)[1].set()
-        self._logger.info(
-            f"no longer watching <{self._group_version_info.crd_name}> {namespace_name} CR until new updates"
-        )
 
     def _get_current_cr_list(self, api: client.CustomObjectsApi) -> List[Any]:
         """
@@ -198,7 +199,6 @@ class Controller:
         self,
         api: client.CustomObjectsApi,
         watcher: watch.Watch,
-        crd_type: type[BaseCRD],
     ) -> Dict[Any, Any]:
         """
         Wrapper to `kubernetes.watch.Watch().stream()`
@@ -215,22 +215,22 @@ class Controller:
 
     def _preload_existing_cr(self):
         self._logger.info(
-            f"preloading existing <{self._group_version_info.crd_name}> CRs"
+            f"preloading existing {self._group_version_info.pretty_kind_str()} CRs"
         )
         try:
             api = client.CustomObjectsApi()
-            crd_type: type[BaseCRD] = self._reconciler._type
+            crd_type: type[BaseCRD] = self.reconciler.crd_type
             current_crs = self._get_current_cr_list(api)
             for pending in current_crs:
                 crd_inst: BaseCRD = crd_type(api)
                 crd_inst.load_data(data=pending)
                 self._add_member(crd_inst)
             self._logger.info(
-                f"preloaded {len(current_crs)} <{self._group_version_info.crd_name}> CR(s)"
+                f"preloaded {len(current_crs)} {self._group_version_info.pretty_kind_str()} CR(s)"
             )
         except Exception as e:
             self._logger.error(
-                f"error while preloading <{self._group_version_info.crd_name}> CR",
+                f"error while preloading {self._group_version_info.pretty_kind_str()} CR",
                 e,
                 exc_info=True,
             )
@@ -242,13 +242,13 @@ class Controller:
         every 5 seconds and removes them once they no longer exists
         """
         self._logger.info(
-            f"starting to watch <{self._group_version_info.crd_name}> CRs pending to remove"
+            f"starting to watch {self._group_version_info.pretty_kind_str()} CRs pending to remove"
         )
         api = client.CustomObjectsApi()
-        while True:
+        while not self._stop.is_set():
             for namespace, name in self._pending_remove:
                 self._logger.info(
-                    f"currently {len(self._pending_remove)} <{self._group_version_info.crd_name}> CRs pending to remove"
+                    f"currently {len(self._pending_remove)} {self._group_version_info.pretty_kind_str()} CRs pending to remove"
                 )
                 try:
                     api.get_namespaced_custom_object_with_http_info(
@@ -263,11 +263,11 @@ class Controller:
                         self._remove_member((namespace, name))
                         self._pending_remove.remove((namespace, name))
                         self._logger.info(
-                            f"<{self._group_version_info.crd_name}> {(namespace, name)} CR no longer found, removed"
+                            f"{self._group_version_info.pretty_kind_str((namespace, name))} CR no longer found, removed"
                         )
                     else:
                         self._logger.error(
-                            f"unexpected api error ocurred while watching pending_remove <{self._group_version_info.crd_name}> CR",
+                            f"unexpected api error ocurred while watching pending_remove {self._group_version_info.pretty_kind_str((namespace, name))} CR",
                             e,
                             exc_info=True,
                         )
@@ -279,8 +279,8 @@ class Controller:
                     defunct_members.append(namespace_name)
             for m in defunct_members:
                 self._remove_member(m)
-                    
-            time.sleep(self.__CLEANUP_INTERVAL)
+
+            event_aware_sleep(self._stop, self.__CLEANUP_INTERVAL)
 
     def _watch_cr_events(self):
         """
@@ -288,19 +288,21 @@ class Controller:
         Adds the member if its `ADDED` or `MODIFIED` and removes them when `DELETED`
         """
         self._logger.info(
-            f"starting to watch <{self._group_version_info.crd_name}> events"
+            f"starting to watch {self._group_version_info.pretty_kind_str()} events"
         )
-        watcher = watch.Watch()
-        crd_type: type[BaseCRD] = self._reconciler._type
+        self._watcher = watch.Watch()
         api = client.CustomObjectsApi()
         try:
-            for event in self._stream_events(api, watcher, crd_type):
+            for event in self._stream_events(api, self._watcher):
+                if self._stop.is_set():
+                    self._watcher.stop()
+                    break
                 if type(event) != dict:
                     self._logger.warning("event received is not a dict, skipping")
                     continue
                 try:
                     e_type = event["type"]
-                    crd_inst: BaseCRD = self._reconciler._type(api)
+                    crd_inst: BaseCRD = self.reconciler.crd_type(api)
                     crd_inst.load_data(event["object"])
                     self._logger.debug(
                         f"event: {crd_inst.namespace_name} {event['type']}"
@@ -320,31 +322,58 @@ class Controller:
 
                 except Exception as e:
                     self._logger.warning(
-                        f"an Exception ocurred while streaming <{self._group_version_info.crd_name}> events",
+                        f"an Exception ocurred while streaming {self._group_version_info.pretty_kind_str()} events",
                         e,
                         exc_info=True,
                     )
                     continue
         except Exception as e:
             self._logger.error(
-                f"error while watching <{self._group_version_info.crd_name}>",
+                f"error while watching {self._group_version_info.pretty_kind_str()}",
                 e,
                 exc_info=True,
             )
             pass
         finally:
             self._logger.info(
-                f"no longer watching events from <{self._group_version_info.crd_name}>"
+                f"no longer watching events from {self._group_version_info.pretty_kind_str()}"
             )
-            watcher.stop()
+            self._watcher.stop()
 
     def run(self) -> Tuple[threading.Thread, threading.Thread]:
-        watcher_loop = threading.Thread(target=self._watch_cr_events, name=f"{self.name}-watcher", daemon=True)
-        cleanup_loop = threading.Thread(target=self._watch_pending_remove, name=f"{self.name}-cleanup", daemon=True)
+        self._watcher_loop = threading.Thread(
+            target=self._watch_cr_events, name=f"{self.name}-watcher", daemon=True
+        )
+        self._cleanup_loop = threading.Thread(
+            target=self._watch_pending_remove, name=f"{self.name}-cleanup", daemon=True
+        )
 
         self._preload_existing_cr()
 
-        watcher_loop.start()
-        cleanup_loop.start()
+        self._watcher_loop.start()
+        self._cleanup_loop.start()
+
+        return (self._watcher_loop, self._cleanup_loop)
+
+    def stop(self):
+        self._logger.info(f"stopping controller {self.name}")
+        if self._watcher is not None:
+            self._watcher.stop()
+        if not self._stop.is_set():
+            self._stop.set()
+            
+        wait_for_stop: List[threading.Thread] = []
+        for member in self._members:
+            thread, stop = self._members[member]
+            self._logger.info(f"sending stop event to {self._group_version_info.pretty_kind_str(member)}")
+            stop.set()
+            wait_for_stop.append(thread)
+            
+        alive_threads = wait_for_stop
+        if len(alive_threads) > 0:
+            self._logger.info(f"waiting for {len(alive_threads)} reconcilation loop(s) thread(s) to stop...")
+            while len(alive_threads) > 0:
+                alive_threads = [thread for thread in wait_for_stop if thread.is_alive()]
+                time.sleep(0.5)
         
-        return (watcher_loop, cleanup_loop)
+        self._logger.info(f"controller {self.name} succesfully stopped")

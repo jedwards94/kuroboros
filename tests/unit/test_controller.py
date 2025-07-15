@@ -132,7 +132,7 @@ class TestController(unittest.TestCase):
         api = MagicMock()
         watcher = MagicMock()
         watcher.stream.return_value = iter([{"type": EventEnum.ADDED, "object": {"metadata": {"name": "foo", "namespace": "bar"}}}])
-        result = self.controller._stream_events(api, watcher, DummyCRD)
+        result = self.controller._stream_events(api, watcher)
         self.assertTrue(isinstance(result, dict) or hasattr(result, "__iter__"))
 
     def test_preload_existing_cr_adds_members(self):

@@ -1,4 +1,5 @@
 import multiprocessing
+import signal
 import threading
 import time
 from typing import Dict, List, Tuple, cast
@@ -16,6 +17,8 @@ from kuroboros.config import (
 from kuroboros.controller import Controller
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler 
+from kuroboros.utils import event_aware_sleep
+from kuroboros.webhook import BaseWebhook
 from kuroboros.webhook_server import HTTPSWebhookServer
 
 
@@ -40,6 +43,7 @@ class Operator:
     _logger = logger.root_logger.getChild(__name__)
     _is_leader: threading.Event
     _threads_by_reconciler: Dict[BaseReconciler, Gauge]
+    _stop: threading.Event
 
     _namespace: str
     name = get_operator_name()
@@ -57,6 +61,7 @@ class Operator:
         self._namespace = OPERATOR_NAMESPACE
         self._logger = self._logger.getChild(self.name)
         self._controllers = []
+        self._stop = threading.Event()
         try:
             config.load_kube_config()
         except Exception:
@@ -96,6 +101,7 @@ class Operator:
             group_version_info=group_version,
             reconciler=reconciler,
             validation_webhook=kwargs.get("validation_webhook", None),
+            mutation_webhook=kwargs.get("mutation_webhook", None),
         )
         if controller.name in [ctrl.name for ctrl in self._controllers]:
             raise RuntimeError("cannot add an already added controller")
@@ -171,13 +177,13 @@ class Operator:
             )
 
     def _metrics(self) -> None:
-        while True:
+        while not self._stop.is_set():
             for ctrl in self._controllers:
                 metric = self._threads_by_reconciler[ctrl.reconciler]
                 metric.labels(
                     OPERATOR_NAMESPACE, ctrl.reconciler.__class__.__name__
                 ).set(ctrl.threads)
-            time.sleep(self.__METRICS_INTERVAL)
+            event_aware_sleep(self._stop, self.__METRICS_INTERVAL)
 
     def start(
         self, skip_controllers: bool = False, skip_webhook_server: bool = False
@@ -217,10 +223,12 @@ class Operator:
 
         # Start the webhook server if needed
         if not skip_webhook_server:
-            webhooks = []
+            webhooks: List[BaseWebhook] = []
             for ctrl in self._controllers:
                 if ctrl.validation_webhook is not None:
                     webhooks.append(ctrl.validation_webhook)
+                if ctrl.mutation_webhook is not None:
+                    webhooks.append(ctrl.mutation_webhook)
                     
 
             if len(webhooks) > 0:
@@ -248,6 +256,8 @@ class Operator:
         op_threads.append(metrics_loop)
 
         self._running = True
+        
+        signal.signal(signal.SIGINT, self.signal_stop)
 
         while self._running:
             for thread in op_threads:
@@ -265,4 +275,14 @@ class Operator:
                             raise RuntimeError(
                                 f"Controller {ctrl.name} thread {thread.name} died unexpectedly"
                             )
-            time.sleep(1.0)
+            event_aware_sleep(self._stop, 1)
+
+    def signal_stop(self, sig, _):
+        self._logger.info(f"signal {sig} received")
+        self._logger.info("gracefully shutting down") 
+        self._stop.set()
+        for ctrl in self._controllers:
+            ctrl.stop()
+        
+        self._running = False
+        self._logger.info(f"operator {self.name} succesfully stopped, good bye!") 
