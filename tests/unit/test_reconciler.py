@@ -1,6 +1,7 @@
 from datetime import timedelta
 from logging import Logger
 from threading import Event, Thread
+import threading
 from time import sleep
 import unittest
 from unittest.mock import patch, MagicMock
@@ -50,7 +51,7 @@ class LoopTest(BaseReconciler[TestCrd]):
     infinite = False
     retriable_exception = False
     unrecoverable_exception = False
-    def reconcile(self, logger: Logger, object: TestCrd):
+    def reconcile(self, logger: Logger, object: TestCrd, stopped: threading.Event):
         self.reconcile_call_count = self.reconcile_call_count + 1
         self.loops = self.loops + 1
         if self.loops == self.max_loops and self.infinite is False:

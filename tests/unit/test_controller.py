@@ -28,7 +28,7 @@ class DummyCRD(BaseCRD):
     def finalizers(self):
         return self._finalizers
 
-    def __init__(self, api=None):
+    def __init__(self, api=None, group_version=None):
         self._namespace_name = ("default", "dummy")
         self._finalizers = []
         self._data = {}
