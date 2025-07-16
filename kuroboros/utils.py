@@ -1,8 +1,10 @@
-import multiprocessing
-import queue
+import concurrent.futures
 import threading
 import time
 from typing import Callable, ParamSpec, TypeVar
+
+import concurrent
+
 
 def event_aware_sleep(event: threading.Event, timeout: float):
     """
@@ -21,36 +23,47 @@ def event_aware_sleep(event: threading.Event, timeout: float):
     pass
 
 
-T = TypeVar('T')
-P = ParamSpec('P')
+T = TypeVar("T")
+P = ParamSpec("P")
+
+
 def with_timeout(
-    timeout_seconds,
-    func: Callable[P, T], 
-    *args: P.args, 
+    stop: threading.Event,
+    timeout_seconds: float | None,
+    func: Callable[P, T],
+    *args: P.args,
     **kwargs: P.kwargs,
 ) -> T:
-    result_queue = multiprocessing.Queue()
-    def wrapper():
-        try:
-            result = func(*args, **kwargs)
-            result_queue.put(("success", result))
-        except Exception as e:
-            result_queue.put(("error", e))
-            
-    
-    process = multiprocessing.Process(target=wrapper)
-    process.start()
-    process.join(timeout=timeout_seconds)
-    
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        raise TimeoutError(f"`{func.__name__}` timed out after {timeout_seconds} seconds")
-    
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *args, **kwargs)
+    start_time = time.time()
+
     try:
-        status, data = result_queue.get_nowait()
-        if status == "error":
-            raise data
-        return data
-    except queue.Empty:
-        raise RuntimeError(f"`{func.__name__}` didn't return any result")
+        while not stop.is_set():
+            # Calculate remaining time if timeout is specified
+            current_time = time.time()
+            if timeout_seconds is not None:
+                elapsed = current_time - start_time
+                if elapsed >= timeout_seconds:
+                    raise TimeoutError(
+                        f"`{func.__name__}` timed out after {timeout_seconds} seconds"
+                    )
+                wait_time = min(0.1, timeout_seconds - elapsed)
+            else:
+                wait_time = 0.1
+
+            # Check future completion with dynamic timeout
+            try:
+                return future.result(timeout=wait_time)
+            except concurrent.futures.TimeoutError:
+                # Continue loop to check stop event or timeout
+                pass
+
+        # Stop event was set
+        raise InterruptedError(f"`{func.__name__}` was stopped before completion")
+    finally:
+        # Cancel future if not completed
+        if not future.done():
+            future.cancel()
+        # Shutdown executor without waiting for thread termination
+        executor.shutdown(wait=False)
