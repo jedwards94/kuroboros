@@ -77,13 +77,15 @@ class BaseReconciler(Generic[T]):
                 inst.load_data(latest)
                 inst_logger, filt = reconciler_logger(self._group_version_info, inst)
                 if self.reconcile_timeout is None:
-                    interval = self.reconcile(logger=inst_logger, object=inst)
+                    interval = self.reconcile(logger=inst_logger, object=inst, stopped=stop)
                 else:
                     interval = with_timeout(
+                        stop,
                         self.reconcile_timeout.total_seconds(),
                         self.reconcile,
                         logger=inst_logger,
                         object=inst,
+                        stopped=stop
                     )
                 inst_logger.removeFilter(filt)
 
@@ -129,13 +131,14 @@ class BaseReconciler(Generic[T]):
         self._logger.info(f"{object} reconcile loop stopped")
         return
 
-    def reconcile(self, logger: Logger, object: T) -> None | timedelta:
+    def reconcile(self, logger: Logger, object: T, stopped: threading.Event) -> None | timedelta:
         """
         The function that reconcile the object to the desired status.
         Returns `None` or `timedelta`. A `timedelta` represent the interval for the next `reconcile` run,  `None` represent the end of the loop.
 
         :param logger: The python logger with `name`, `namespace_name` and `resource_version` pre-loaded
         :param object: The CRD instance at the run moment
+        :param stopped: The reconciliation loop event that signal a stop
         :returns interval (`timedelta`|`None`): The amount of time that the controller waits to run the `reconcile` function again.
         If its `None` it will never run again until further updates or a controller restart
         """
