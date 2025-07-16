@@ -30,7 +30,7 @@ class GroupVersionInfo:
         return re.match(GroupVersionInfo.__VERSION_PATTERN, api_version) is not None
     
     def pretty_kind_str(self, namespace_name: Tuple[str, str] | None = None) -> str:
-        if namespace_name is not None and namespace_name is not (None, None):
+        if namespace_name is not None and namespace_name != (None, None):
             return f"{self.kind}{self.pretty_version_str()}(Namespace={namespace_name[0]}, Name={namespace_name[1]})"
         return f"{self.kind}{self.pretty_version_str()}"
     

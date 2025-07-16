@@ -29,6 +29,7 @@ P = ParamSpec("P")
 
 def with_timeout(
     stop: threading.Event,
+    retriable: bool,
     timeout_seconds: float | None,
     func: Callable[P, T],
     *args: P.args,
@@ -45,6 +46,8 @@ def with_timeout(
             if timeout_seconds is not None:
                 elapsed = current_time - start_time
                 if elapsed >= timeout_seconds:
+                    if not retriable:
+                        stop.set()
                     raise TimeoutError(
                         f"`{func.__name__}` timed out after {timeout_seconds} seconds"
                     )

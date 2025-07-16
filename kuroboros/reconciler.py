@@ -81,6 +81,7 @@ class BaseReconciler(Generic[T]):
                 else:
                     interval = with_timeout(
                         stop,
+                        self.timeout_retry,
                         self.reconcile_timeout.total_seconds(),
                         self.reconcile,
                         logger=inst_logger,
