@@ -46,6 +46,7 @@ class Operator:
     _stop: threading.Event
     _threads: List[threading.Thread]
     _processes: List[multiprocessing.Process]
+    _interrupted = False
 
     _namespace: str
     name = get_operator_name()
@@ -178,12 +179,14 @@ class Operator:
             )
 
     def _metrics(self) -> None:
+        active_threads = Gauge("python_active_threads", "The number of python threads active")
         while not self._stop.is_set():
             for ctrl in self._controllers:
                 metric = self._threads_by_reconciler[ctrl.reconciler]
                 metric.labels(
                     OPERATOR_NAMESPACE, ctrl.reconciler.__class__.__name__
                 ).set(ctrl.threads)
+            active_threads.set(threading.active_count())
             event_aware_sleep(self._stop, self.__METRICS_INTERVAL)
 
     def start(
@@ -295,6 +298,10 @@ class Operator:
     def signal_stop(self, sig, _):
         self._logger.warning(f"{signal.Signals(sig).name} received")
         if sig == 2: # SIGINT
+            if self._interrupted:
+                self._logger.warning("second SIGINT received, killing process")
+                exit(1)
+            self._interrupted = True
             self._logger.warning("trying to gracefully shutdown...") 
             for ctrl in self._controllers:
                 ctrl.stop()
