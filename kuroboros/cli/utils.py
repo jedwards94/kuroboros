@@ -7,9 +7,11 @@ from typing import List
 import click
 
 from kuroboros.controller import ControllerConfig, ControllerConfigVersions
+from kuroboros.exceptions import MultipleDefinitionsException
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
 from kuroboros.schema import BaseCRD
+from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook
 
 def yaml_format(value):
     """Converts Python types to YAML-compatible strings with proper quoting"""
@@ -35,7 +37,7 @@ def yaml_format(value):
 
 def parse_prop_name(name: str) -> str:
     """
-    Parses the name of props in python kubernetes to a camelCased name with some exceptions
+    Handle special cases for some prop names
     """
     if name.startswith("x_kubernetes_"):
         return name.replace("_", "-")
@@ -106,15 +108,19 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
     path = os.path.join(Path().absolute(), controllers_path)
     directory = Path(path)
     try:
+        # each folder in /controllers
         controllers = [entry.name for entry in directory.iterdir() if entry.is_dir()]
     except:
         controllers = []
     for controller in controllers:
+        # we assume that each controller has a group_version.py file
+        # and a versions folder with the versions of the controller
         ctrl_conf = ControllerConfig()
         ctrl_conf.name = controller
         try:
             group_version_module = importlib.import_module(f"{controllers_path}.{controller}.group_version")
         except:
+            # If we dont find any GVI we skip this controller, as its not a controller (?)
             continue
         group_version = None
         for _, obj in inspect.getmembers(group_version_module):
@@ -122,35 +128,61 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                 group_version = obj
         
         if group_version is None:
+            # If we find a group_versin.py file but it doesn't contain any GVI object
             continue
         ctrl_conf.group_version_info = group_version
         versions_path = os.path.join(path, controller)
         versions_dir = Path(versions_path)
-        versions = [entry.name for entry in versions_dir.iterdir() if entry.is_dir()]
+        versions = [entry.name for entry in versions_dir.iterdir() if entry.is_dir() and GroupVersionInfo.is_valid_api_version(entry.name)]
         for version in versions:
+            # each version folder should have python files with the reconciler, crd classes and 
+            # posibly validation and mutation webhook
             ctrl_versions = ControllerConfigVersions()
             ctrl_versions.name = version
-            version_path = os.path.join(versions_path, version)
-            version_dir = Path(version_path)
-            python_files = version_dir.glob("*.py")
+            version_dir = Path(os.path.join(versions_path, version))
+            patterns = ["crd.py", "reconciler.py", "validation.py", "mutation.py"]
+            python_files = []
+            for pattern in patterns:
+                python_files.extend(version_dir.glob(pattern))
+                
+
             for file in python_files:
                 module_name = file.stem
                 if module_name == "__init__":
                     continue
                 
                 module = importlib.import_module(f"{controllers_path}.{controller}.{version}.{module_name}")
+                
                 for _, obj in inspect.getmembers(module):
-                    if inspect.isclass(obj) and BaseReconciler in obj.__bases__:
-                        ctrl_versions.reconciler = obj(group_version)
-                    if inspect.isclass(obj) and BaseCRD in obj.__bases__:
-                        ctrl_versions.crd = obj(group_version)
+                    if module_name == "reconciler": # Load reconciler from reconciler.py
+                        if inspect.isclass(obj) and BaseReconciler in obj.__bases__:
+                            if ctrl_versions.reconciler is not None and not isinstance(ctrl_versions.reconciler, obj):
+                                raise MultipleDefinitionsException(ctrl_versions.reconciler, controller, version)
+                            ctrl_versions.reconciler = obj(group_version)
+                    elif module_name == "crd": # Load CRD from crd.py
+                        if inspect.isclass(obj) and BaseCRD in obj.__bases__:
+                            if ctrl_versions.crd is not None and not isinstance(ctrl_versions.crd, obj):
+                                raise MultipleDefinitionsException(ctrl_versions.crd, controller, version)
+                            ctrl_versions.crd = obj(group_version)
+                    elif module_name == "validation": # Load validation webhook from validation.py
+                        if inspect.isclass(obj) and BaseValidationWebhook in obj.__bases__:
+                            if ctrl_versions.validation_webhook is not None and not isinstance(ctrl_versions.validation_webhook, obj):
+                                raise MultipleDefinitionsException(ctrl_versions.validation_webhook, controller, version)
+                            ctrl_versions.validation_webhook = obj(group_version)
+                    elif module_name == "mutation": # Load mutation webhook from validation.py
+                        if inspect.isclass(obj) and BaseMutationWebhook in obj.__bases__:
+                            if ctrl_versions.mutation_webhook is not None and not isinstance(ctrl_versions.mutation_webhook, obj):
+                                raise MultipleDefinitionsException(ctrl_versions.mutation_webhook, controller, version)
+                            ctrl_versions.mutation_webhook = obj(group_version)
+                # Only reconciler and CRD are required, otherwhise we skip this version
                 if ctrl_versions.reconciler is not None and ctrl_versions.crd is not None:
                     ctrl_conf.versions.append(ctrl_versions)
+        # If the controller has at least 1 valid version we append it, otherwhise we ignore it
         if len(ctrl_conf.versions) > 0:
             controllers_configs.append(ctrl_conf)
 
     
     return controllers_configs
-                            
-                            
-                            
+
+
+

@@ -33,7 +33,7 @@ spec:
             cpu: 10m
             memory: 64Mi
         volumeMounts:
-        - mountPath: /etc/config/operator.conf
+        - mountPath: /home/app/operator/operator.conf
           name: config-volume
       securityContext:
         runAsNonRoot: true

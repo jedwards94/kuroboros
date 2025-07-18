@@ -7,13 +7,17 @@ from kuroboros.cli.build import docker_build
 from kuroboros.cli.generate import (
     crd_schema,
     kustomize_file,
+    mutation_webhook_config,
     operator_config,
     operator_deployment,
+    operator_metrics_service,
+    operator_webhook_service,
     rbac_leader_role,
     rbac_leader_role_binding,
     rbac_operator_role,
     rbac_operator_role_binding,
     rbac_sa,
+    validation_webhook_config
 )
 
 from kuroboros.cli.new import (
@@ -29,6 +33,7 @@ from kuroboros.config import config
 from kuroboros.operator import Operator
 
 from importlib.metadata import version
+
 VERSION_NUM = version("kuroboros")
 
 
@@ -36,6 +41,7 @@ KUSTOMIZE_OUT = "config/base"
 KUSTOMIZE_OVERLAYS = "config/overlays"
 CRD_OUT = "crd"
 RBAC_OUT = "rbac"
+WEBHOOKS_OUT = "webhooks"
 DEPLOYMENT_OUT = "deployment"
 
 sys.path.insert(0, str(Path().absolute()))
@@ -60,9 +66,11 @@ def cli(ctx, config_file):
     config.read(config_file)
     pass
 
-@cli.command("version",help="Get kuroboros version")
+
+@cli.command("version", help="Get kuroboros version")
 def version_cli():
     click.echo(VERSION_NUM)
+
 
 @cli.group(help="Generate the kubernetes resources manifests to deploy the operator")
 @click.pass_context
@@ -105,13 +113,35 @@ def rbac():
         "leader-election-role.yaml",
         "leader-election-role-binding.yaml",
     ]
-    
+
     create_file(output, "service-account.yaml", rbac_sa())
     create_file(output, "operator-role.yaml", rbac_operator_role(controllers))
     create_file(output, "operator-role-binding.yaml", rbac_operator_role_binding())
     create_file(output, "leader-election-role.yaml", rbac_leader_role())
     create_file(output, "leader-election-role-binding.yaml", rbac_leader_role_binding())
     create_file(output, "kustomization.yaml", kustomize_file(resources))
+
+@generate.command(help="Generates the Webhooks YAML manifests")
+def webhooks():
+    click.echo("🌀 Generating Webhooks YAMLs")
+    click.echo(f"{KUSTOMIZE_OUT}/{WEBHOOKS_OUT}/")
+    output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, WEBHOOKS_OUT)
+
+    resources = []
+    ctrls_with_validation_webhooks = [ctrl for ctrl in controllers if ctrl.validation_webhook is not None]
+    ctrls_with_mutation_webhooks = [ctrl for ctrl in controllers if ctrl.mutation_webhook is not None]
+
+    if len(ctrls_with_validation_webhooks) > 0:
+        create_file(output, "validation-webhooks.yaml", validation_webhook_config(ctrls_with_validation_webhooks))
+        resources.append("validation-webhooks.yaml")
+    
+    if len(ctrls_with_validation_webhooks) > 0:
+        create_file(output, "mutation-webhooks.yaml", mutation_webhook_config(ctrls_with_mutation_webhooks))
+        resources.append("mutation-webhooks.yaml")
+    if len(resources) > 0:
+        create_file(output, "kustomization.yaml", kustomize_file(resources))
+    else:
+        click.echo("Nothing to create")
 
 
 @generate.command(help="Generates the Deployment YAML manifests")
@@ -122,7 +152,11 @@ def deployment(ctx):
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, DEPLOYMENT_OUT)
 
     config_file = ctx.obj["config_file"]
-    resources = ["operator-deployment.yaml", "operator-config.yaml"]
+    resources = ["operator-deployment.yaml", "operator-config.yaml", "metrics-service.yaml"]
+    include_webhook_service = False
+    for ctrl in controllers:
+        if ctrl.has_webhooks():
+            include_webhook_service = True
     image_config = []
     if "generate.deployment.image" in config.sections():
         reg = config.get("generate.deployment.image", "registry", fallback="")
@@ -141,6 +175,10 @@ def deployment(ctx):
             }
         ]
 
+    if include_webhook_service:
+            create_file(output, "webhook-service.yaml", operator_webhook_service()) 
+            resources.append("webhook-service.yaml")
+    create_file(output, "metrics-service.yaml", operator_metrics_service())
     create_file(output, "operator-deployment.yaml", operator_deployment())
     create_file(output, "operator-config.yaml", operator_config(config_file))
     create_file(output, "kustomization.yaml", kustomize_file(resources, image_config))
@@ -152,6 +190,7 @@ def manifests(ctx):
     ctx.invoke(crd)
     ctx.invoke(rbac)
     ctx.invoke(deployment)
+    ctx.invoke(webhooks)
 
 
 @generate.command(help="Generate a new overlay in config/overlays")
@@ -159,10 +198,13 @@ def manifests(ctx):
 def overlay(name):
     click.echo(f"🌀 Creating new overlay {name}")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OVERLAYS, name)
+    paths = ["../../base/rbac", "../../base/crd", "../../base/deployment"]
+    for ctrl in controllers:
+        if ctrl.has_webhooks():
+            paths.append("../../base/webhooks")
+            break
 
-    file = kustomize_file(
-        ["../../base/rbac", "../../base/crd", "../../base/deployment"]
-    )
+    file = kustomize_file(paths)
     create_file(output, "kustomization.yaml", file)
 
 
@@ -239,39 +281,43 @@ def build():
 
 
 @cli.command(help="Starts the Kuroboros Operator")
-def start():
+@click.option(
+    "--skip-controllers",
+    is_flag=True,
+    default=False,
+    help="Skips all controllers startup",
+)
+@click.option(
+    "--skip-webhook-server",
+    is_flag=True,
+    default=False,
+    help="Skips the webhook server startup",
+)
+def start(skip_controllers, skip_webhook_server):
     operator = Operator()
     click.echo(f"🌀🐍 Starting {operator.name} ...")
-    last_ctrl = controllers[-1]
     for ctrl in controllers:
-        is_last = ctrl == last_ctrl
-        decoration = "  └─" if is_last else "  ├─"
         run_version = ctrl.get_run_version()
-        major = ctrl.group_version_info.major
-        stability = ctrl.group_version_info.stability.capitalize()
-        minor = ctrl.group_version_info.minor if ctrl.group_version_info.minor != 0 else ""
         if run_version.reconciler is None:
             raise RuntimeError(f"reconciler `None` in {ctrl.name} {run_version.name}")
 
-        name = f"{ctrl.name.capitalize()}V{major}{stability}{minor}Controller"
         try:
             operator.add_controller(
-                name=name,
+                name=ctrl.name,
                 group_version=ctrl.group_version_info,
                 reconciler=run_version.reconciler,
-            )
-            click.echo(
-                f"{decoration} {name} ({ctrl.group_version_info.group}/{ctrl.group_version_info.api_version}/{ctrl.group_version_info.plural}) [OK]"
+                validation_webhook=run_version.validation_webhook,
+                mutation_webhook=run_version.mutation_webhook,
             )
 
         except Exception as e:
-            click.echo(
-                f"{decoration} {name} ({ctrl.group_version_info.group}/{ctrl.group_version_info.api_version}/{ctrl.group_version_info.plural}) [FAILED]"
-            )
             click.echo(e)
             continue
 
-    operator.start()
+    operator.start(
+        skip_webhook_server=skip_webhook_server, skip_controllers=skip_controllers
+    )
+    return
 
 
 if __name__ == "__main__":

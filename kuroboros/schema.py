@@ -1,5 +1,6 @@
 from typing import Any, List, Tuple, Dict, TypeVar, cast, get_args, get_origin
 from kubernetes import client
+import copy
 
 from kubernetes.client import V1OwnerReference
 
@@ -79,25 +80,53 @@ class BaseCRD:
     api: client.CustomObjectsApi | None
     group_version: GroupVersionInfo | None
     status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
+    read_only = False
+    _data: dict = {}
 
     def __init__(
         self,
         api: client.CustomObjectsApi | None = None,
         group_version: GroupVersionInfo | None = None,
+        read_only: bool = False,
+        data: Dict = {},
     ):
-        self._data = {}
+        if read_only == True and data == {}:
+            raise ValueError("read_only CRD must have data provided")
+        self._data = copy.deepcopy(data)
         self.api = api
         self.group_version = group_version
+        self.read_only = read_only
         return
+    
+    def __repr__(self) -> str:
+        if self.group_version is not None:
+            return f"{self.group_version.pretty_kind_str((self.metadata['namespace'], self.metadata['name']))}"
+        return f"{self.__class__.__name__}(Name={self.metadata['name']}, Namespace={self.metadata['namespace']})"
 
     def load_data(self, data: Any):
         """
         loads an object as a `dict` into the class to get the values
         """
         if isinstance(data, self.__class__):
-            self._data = data._data
+            self._data = copy.deepcopy(data._data)
             return
-        self._data = dict(data)
+        self._data = copy.deepcopy(dict(data))
+        
+    def get_data(self) -> Dict[str, Any]:
+        """
+        Returns the data of the CRD object as a dict
+        """
+        return {
+            "metadata": {
+                **{
+                    k: v
+                    for k, v in self._data["metadata"].items()
+                    if k not in ["resourceVersion", "managedFields"]
+                },
+            },
+            "spec": self._data.get("spec", {}),
+            "status": self._data.get("status", {}),
+        }
 
     def patch(self, patch_status: bool = True):
         """
@@ -110,18 +139,13 @@ class BaseCRD:
             raise RuntimeError("`patch` used when api is `None`")
         if self.group_version is None:
             raise RuntimeError("`patch` used when group_version is `None`")
+        
+        if self.read_only:
+            raise RuntimeError(
+                f"Cannot call `patch` on read-only CRD object `{self}`"
+            )
 
-        new_state = {
-            "metadata": {
-                **{
-                    k: v
-                    for k, v in self._data["metadata"].items()
-                    if k not in ["resourceVersion", "managedFields"]
-                },
-            },
-            "spec": self._data.get("spec", {}),
-            "status": self._data.get("status", {}),
-        }
+        new_state = self.get_data()
         if self.group_version.scope == "Namespaced":
             if "status" in self._data and patch_status:
                 response = self.api.patch_namespaced_custom_object_status(
@@ -160,6 +184,10 @@ class BaseCRD:
             return None
 
     def __setattr__(self, name: str, value: Any) -> None:
+        if self.read_only:
+            raise RuntimeError(
+                f"Cannot set attribute `{name}` on read-only CRD object `{self}`"
+            )
         try:
             attr = object.__getattribute__(self, name)
             if name == "status" or name == "metadata":
@@ -219,7 +247,7 @@ class BaseCRD:
     @property
     def metadata(self) -> Dict[Any, Any]:
         if "metadata" not in self._data.keys():
-            raise RuntimeError("method called at wrong time, no metadata present")
+            raise RuntimeError(f"method called at wrong time, no metadata present at {self}")
         return self._data["metadata"]
 
     @metadata.setter

@@ -1,6 +1,7 @@
 from datetime import timedelta
 from logging import Logger
 from threading import Event, Thread
+import threading
 from time import sleep
 import unittest
 from unittest.mock import patch, MagicMock
@@ -34,13 +35,8 @@ class TestInit(unittest.TestCase):
         self.assertIsInstance(reconciler, TestReconciler)
 
     def test_invalid(self):
-        try:
+        with self.assertRaises(RuntimeError):
             InvalidReconciler(test_api_group)
-        except Exception as e:
-            self.assertIsInstance(e, RuntimeError)
-            return
-        
-        raise Exception("Test ended without error")
 
 
 class LoopTest(BaseReconciler[TestCrd]):
@@ -50,7 +46,7 @@ class LoopTest(BaseReconciler[TestCrd]):
     infinite = False
     retriable_exception = False
     unrecoverable_exception = False
-    def reconcile(self, logger: Logger, object: TestCrd):
+    def reconcile(self, logger: Logger, object: TestCrd, stopped: threading.Event):
         self.reconcile_call_count = self.reconcile_call_count + 1
         self.loops = self.loops + 1
         if self.loops == self.max_loops and self.infinite is False:
@@ -90,7 +86,7 @@ class TestLoop(unittest.TestCase):
                 "uid": "1",
             }
         }
-        reconciler._reconcile(test_obj, ev)
+        reconciler.reconcilation_loop(test_obj, ev)
         self.assertEqual(reconciler.reconcile_call_count, 2)
         self.assertEqual(mock_get.call_count, 2)
         
@@ -114,7 +110,7 @@ class TestLoop(unittest.TestCase):
         })
         ev = Event()
         mock_get.side_effect = client.ApiException(status=404, reason="Not Found")
-        reconciler._reconcile(test_obj, ev)
+        reconciler.reconcilation_loop(test_obj, ev)
         mock_get.assert_called_once()
         self.assertEqual(reconciler.reconcile_call_count, 0)
         
@@ -142,7 +138,7 @@ class TestLoop(unittest.TestCase):
                 "uid": "1",
             }
         }
-        reconcile_thread = Thread(target=reconciler._reconcile, args=(test_obj, ev))
+        reconcile_thread = Thread(target=reconciler.reconcilation_loop, args=(test_obj, ev))
         reconcile_thread.start()
         ev.set()
         sleep(0.2)
@@ -173,7 +169,7 @@ class TestLoop(unittest.TestCase):
                 "uid": "1",
             }
         }
-        reconciler._reconcile(test_obj, ev)
+        reconciler.reconcilation_loop(test_obj, ev)
         self.assertEqual(reconciler.reconcile_call_count, 2)
 
     @patch("kubernetes.client.CustomObjectsApi.get_namespaced_custom_object")
@@ -200,5 +196,5 @@ class TestLoop(unittest.TestCase):
                 "uid": "1",
             }
         }
-        reconciler._reconcile(test_obj, ev)
+        reconciler.reconcilation_loop(test_obj, ev)
         self.assertEqual(reconciler.reconcile_call_count, 1)

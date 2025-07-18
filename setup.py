@@ -14,11 +14,14 @@ setup(
     },
     include_package_data=True,
     install_requires=[
-        "click",
-        "kubernetes",
-        "inflect",
-        "jinja2",
-        "prometheus-client",
-        "docker"
+        "click==8.2.0",
+        "kubernetes==32.0.1",
+        "inflect==7.5.0",
+        "jinja2==3.1.6",
+        "prometheus-client==0.21.1",
+        "docker==7.1.0",
+        "falcon==4.0.2",
+        "gunicorn==23.0.0",
+        "jsonpatch==1.33",
     ],
 )

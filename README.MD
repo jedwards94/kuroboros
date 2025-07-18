@@ -121,24 +121,29 @@ class Cache(BaseCRD):
 
 ```
 ## Reconciler
-The `Reconciler` is the where you implement the method `reconcile`, this function will be run on a separated `Thread` for every member of the `Controller`, so creating in-memory dictionaries and variables in the `BaseReconciler` class should be done with concurrency in mind. Every `Reconciler` *MUST* be a class inherited from `BaseReconciler`, otherwhise the CLI wont recognice the class.
+The `Reconciler` is the where you implement the method `reconcile`, this function will be run on a separated `Thread` for every member of the `Controller`, so creating in-memory dictionaries and variables in the `BaseReconciler` class should be done with concurrency in mind. Every `Reconciler` *MUST* be a class inherited from `BaseReconciler` and be located in `reconciler.py`, otherwhise the CLI wont recognice the class.
 ### example
 ```python
 # example/controllers/cache/v1/reconciler.py
 from kuroboros.reconciler import BaseReconciler
 from .crd import Cache
 from datetime import timedelta
+import threading
 
 
 class CacheReconciler(BaseReconciler[Cache]):
     
     
-    def reconcile(self, logger, object):
+    def reconcile(self, logger, object: Cache, stopped: threading.Event):
         if some_condition:
             return timedelta(seconds=5)
         
         return
 ```
+
+## Admission Webhooks
+CUrrently only validation and mutation webhooks are supported.
+
 
 ## CLI
 ### the `kuroboros` base command

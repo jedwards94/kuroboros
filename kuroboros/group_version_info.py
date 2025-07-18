@@ -1,5 +1,5 @@
 import re
-from typing import cast
+from typing import Tuple, cast
 
 import inflect
 
@@ -21,6 +21,29 @@ class GroupVersionInfo:
     crd_name: str
     short_names: list[str]
     scope: str = "Namespaced"
+    
+    @staticmethod
+    def is_valid_api_version(api_version: str) -> bool:
+        """
+        Validates if the given API version string matches the expected format.
+        """
+        return re.match(GroupVersionInfo.__VERSION_PATTERN, api_version) is not None
+    
+    def pretty_kind_str(self, namespace_name: Tuple[str, str] | None = None) -> str:
+        if namespace_name is not None and namespace_name != (None, None):
+            return f"{self.kind}{self.pretty_version_str()}(Namespace={namespace_name[0]}, Name={namespace_name[1]})"
+        return f"{self.kind}{self.pretty_version_str()}"
+    
+    def pretty_version_str(self) -> str:
+        major = self.major
+        stability = self.stability.capitalize()
+        minor = (
+            self.minor
+            if self.minor != 0
+            else ""
+        )
+        
+        return f"V{major}{stability}{minor}"
     
     def __init__(self, api_version: str, group: str, kind: str, **kwargs):
         inf = inflect.engine()
@@ -62,6 +85,6 @@ class GroupVersionInfo:
         return self._key() < other._key()
 
     def __repr__(self):
-        return f"GroupVersionInfo('version: {self.api_version}, group: {self.group}')"
+        return f"GroupVersionInfo(version={self.api_version}, group={self.group})"
     
     

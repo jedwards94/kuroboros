@@ -14,11 +14,15 @@ temps.env.filters["yaml"] = yaml_format
 crd_template = temps.env.get_template("generate/crd/crd.yaml.j2")
 deployment_template = temps.env.get_template("generate/deployment/operator-deployment.yaml.j2")
 deployment_config_template = temps.env.get_template("generate/deployment/operator-config.yaml.j2")
+deployment_metrics_service = temps.env.get_template("generate/deployment/metrics-service.yaml.j2")
+deployment_webhook_service = temps.env.get_template("generate/deployment/webhook-service.yaml.j2")
 rbac_sa_template = temps.env.get_template("generate/rbac/service-account.yaml.j2")
 rbac_operator_role_template = temps.env.get_template("generate/rbac/operator-role.yaml.j2")
 rbac_operator_role_binding_template = temps.env.get_template("generate/rbac/operator-role-binding.yaml.j2")
 rbac_leader_election_role_template = temps.env.get_template("generate/rbac/leader-election-role.yaml.j2")
 rbac_leader_election_role_binding_template = temps.env.get_template("generate/rbac/leader-election-role-binding.yaml.j2")
+validation_webhook_configs = temps.env.get_template("generate/webhooks/validation-webhook-config.yaml.j2")
+mutation_webhook_configs = temps.env.get_template("generate/webhooks/mutation-webhook-config.yaml.j2")
 kustomization_template = temps.env.get_template("generate/kustomization.yaml.j2")
 
 def crd_schema(versions: Dict[str, BaseCRD], group_version_info: GroupVersionInfo) -> str:
@@ -79,7 +83,7 @@ def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
 
     for ctrl in controllers:
         ctrl_crd_policy = {
-            "api_groups": [version.name for version in ctrl.versions],
+            "api_groups": [ctrl.group_version_info.group],
             "resources": [ctrl.group_version_info.plural],
             "verbs": ["create", "list", "watch", "delete", "get", "patch", "update"],    
         }
@@ -117,6 +121,19 @@ def operator_deployment() -> str:
     """
     return deployment_template.render(name=get_operator_name())
 
+def operator_metrics_service() -> str:
+    """
+    Generates the `Service` for the operator metrics.
+    The service is used to expose the operator's metrics server
+    """
+    return deployment_metrics_service.render(name=get_operator_name())
+
+def operator_webhook_service() -> str:
+    """
+    Generates the `Service` for the operator webhook.
+    The service is used to expose the operator's webhook server
+    """
+    return deployment_webhook_service.render(name=get_operator_name())
 
 def operator_config(config_file: str) -> str:
     """
@@ -132,6 +149,28 @@ def operator_config(config_file: str) -> str:
 
     return deployment_config_template.render(name=get_operator_name(), config=operator_config)
     
+
+def validation_webhook_config(controllers: List[ControllerConfig]) -> str:
+    """
+    Generates the `ValidatingWebhookConfiguration` for the controllers
+    """
+    gvis = []
+    for ctrl in controllers:
+        gvi = ctrl.group_version_info
+        gvis.append(gvi)
+
+    return validation_webhook_configs.render(name=get_operator_name(), gvis=gvis)
+
+def mutation_webhook_config(controllers: List[ControllerConfig]) -> str:
+    """
+    Generates the `ValidatingWebhookConfiguration` for the controllers
+    """
+    gvis = []
+    for ctrl in controllers:
+        gvi = ctrl.group_version_info
+        gvis.append(gvi)
+
+    return mutation_webhook_configs.render(name=get_operator_name(), gvis=gvis)
 
 def kustomize_file(resources: list[str], images: list[dict] = []):
     return kustomization_template.render(resources=resources, images=images)

@@ -32,10 +32,8 @@ class TestInit(unittest.TestCase):
             typed_prop = cast(CRDProp, prop(supported_type))
             self.assertEqual(typed_prop.typ, supported_types[supported_type])
 
-        try:
-            typed_prop = cast(CRDProp, prop(list[object]))
-        except Exception as e:
-            self.assertIsInstance(e, TypeError)
+        with self.assertRaises(TypeError):
+            cast(CRDProp, prop(object))
 
     def test_load_data(self):
         inst = TestCrd()
@@ -53,6 +51,24 @@ class TestInit(unittest.TestCase):
         assert inst.status is not None
         self.assertIsNotNone(inst.metadata)
         self.assertDictEqual(inst.status, {"some": "thing"})
+        
+    def test_load_data_by_value(self):
+        data_1 = {
+            "metadata": {
+                "name": "test"
+            },
+            "spec": {
+                "test_field": "test"
+            }
+        }
+        inst_1 = TestCrd(data=data_1)
+        inst_2 = TestCrd(data=data_1)
+        
+        inst_1.test_field = "test2"
+        
+        self.assertNotEqual(inst_1.get_data(), inst_2.get_data())
+        
+        
 
 
 
@@ -107,18 +123,14 @@ class TestInstance(unittest.TestCase):
         inst = TestCrd(group_version=test_api_group)
         inst.load_data(data)
 
-        try:
+        with self.assertRaises(RuntimeError):
             inst.patch()
-        except Exception as e:
-            self.assertIsInstance(e, RuntimeError)
         
         inst = TestCrd(api=client.CustomObjectsApi())
         inst.load_data(data)
 
-        try:
+        with self.assertRaises(RuntimeError):
             inst.patch()
-        except Exception as e:
-            self.assertIsInstance(e, RuntimeError)
         
 
         

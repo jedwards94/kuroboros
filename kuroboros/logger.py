@@ -25,21 +25,24 @@ class StaticInfoFilter(logging.Filter):
 
 
 def reconciler_logger(group_version: GroupVersionInfo, crd: BaseCRD):
-    crd_logger = logging.getLogger(f"{group_version.group}.{group_version.plural}")
-    static_fields = {
-        "namespace_name": crd.namespace_name,
-        "resource_version": crd.resource_version,
-        "version": group_version.api_version,
-    }
-    filt = StaticInfoFilter(static_fields)
-    crd_logger.addFilter(filt)
-    if len(crd_logger.handlers) > 0:
-        return crd_logger, filt
-    crd_logger.setLevel(logging.INFO)
-    new_format = f"timestamp=%(asctime)s name=%(name)s version=%(version)s namespace_name=%(namespace_name)s resource_version=%(resource_version)s level=%(levelname)s msg=\"%(message)s\""
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(new_format)
-    handler.setFormatter(formatter)
-    crd_logger.addHandler(handler)
-
+    crd_logger = logging.getLogger(f"{group_version.pretty_kind_str(crd.namespace_name)}")
+    crd_logger.propagate = False
+    filt = StaticInfoFilter({
+        "resource_version": crd.resource_version
+    })
+    # Add filter only if not already present
+    if not any(isinstance(f, StaticInfoFilter) for f in crd_logger.filters):
+        crd_logger.addFilter(filt)
+    # Add handler only if not already present
+    if not any(isinstance(h, logging.StreamHandler) for h in crd_logger.handlers):
+        crd_logger.setLevel(logging.INFO)
+        new_format = (
+            "timestamp=%(asctime)s name=%(name)s "
+            "resource_version=%(resource_version)s "
+            "level=%(levelname)s msg=\"%(message)s\""
+        )
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(new_format)
+        handler.setFormatter(formatter)
+        crd_logger.addHandler(handler)
     return crd_logger, filt
