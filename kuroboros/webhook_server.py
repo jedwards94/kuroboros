@@ -8,7 +8,7 @@ from kuroboros import logger
 from gunicorn.app.base import BaseApplication
 from gunicorn import glogging
 
-from kuroboros.webhook import BaseValidationWebhook, BaseWebhook
+from kuroboros.webhook import BaseWebhook
 
 class InjectedLogger(glogging.Logger):
     def __init__(self, cfg):

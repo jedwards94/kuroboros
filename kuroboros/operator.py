@@ -45,7 +45,7 @@ class Operator:
     _threads_by_reconciler: Dict[BaseReconciler, Gauge]
     _stop: threading.Event
     _threads: List[threading.Thread]
-    _processes: List[multiprocessing.Process]
+    _webhook_server_process: multiprocessing.Process | None
     _interrupted = False
 
     _namespace: str
@@ -58,12 +58,14 @@ class Operator:
 
     def __init__(self) -> None:
         self._threads_by_reconciler = {}
-        self._is_leader = threading.Event()
+        self._controllers = []
+        self._threads = []
+        self._webhook_server_process = None
         self._running = False
+        self._is_leader = threading.Event()
         self._uid = str(uuid.uuid4())
         self._namespace = OPERATOR_NAMESPACE
         self._logger = self._logger.getChild(self.name)
-        self._controllers = []
         self._stop = threading.Event()
         try:
             config.load_kube_config()
@@ -179,7 +181,7 @@ class Operator:
             )
 
     def _metrics(self) -> None:
-        active_threads = Gauge("python_active_threads", "The number of python threads active")
+        active_threads = Gauge("python_active_threads", "The number of active python threads")
         while not self._stop.is_set():
             for ctrl in self._controllers:
                 metric = self._threads_by_reconciler[ctrl.reconciler]
@@ -202,9 +204,6 @@ class Operator:
         if len(self._controllers) == 0:
             raise RuntimeError("no controllers found to run the operator")
 
-        op_threads: List[threading.Thread] = []
-        op_processes: List[multiprocessing.Process] = []
-
         # Start the webhook server if needed
         if not skip_webhook_server:
             webhooks: List[BaseWebhook] = []
@@ -222,12 +221,12 @@ class Operator:
                     endpoints=webhooks,
                     port=self.__WEBHOOK_PORT,
                 )
-                webhook_server_process = multiprocessing.Process(
+                self._webhook_server_process = multiprocessing.Process(
                     target=webhook_server.start,
                     name=f"{self.name}-webhook-server-process",
                 )
-                webhook_server_process.start()
-                op_processes.append(webhook_server_process)
+                self._webhook_server_process.start()
+                
 
 
         # Start controllers
@@ -238,7 +237,7 @@ class Operator:
                 name=f"{self.name}-leader-election",
                 daemon=True,
             )
-            op_threads.append(leader_election)
+            self._threads.append(leader_election)
             leader_election.start()
             while not self.is_leader():
                 if not leader_election.is_alive():
@@ -256,15 +255,13 @@ class Operator:
         try:
             start_http_server(self.__METRICS_PORT)
         except Exception:
+            self._logger.warning("metrics http server could not be started")
             pass
         metrics_loop = threading.Thread(
             target=self._metrics, name=f"{self.name}-metrics", daemon=True
         )
         metrics_loop.start()
-        op_threads.append(metrics_loop)
-        
-        self._threads = op_threads
-        self._processes = op_processes
+        self._threads.append(metrics_loop)
         self._running = True
         
         # handle stop
@@ -272,15 +269,15 @@ class Operator:
         
         # handle crash
         while self._running:
-            for thread in op_threads:
+            for thread in self._threads:
                 if not thread.is_alive():
                     self._logger.error(f"Thread {thread.name} died unexpectedly")
                     raise threading.ThreadError("Death thread")
                 
-            for process in self._processes:
-                if not process.is_alive():
-                    self._logger.error(f"Thread {process.name} died unexpectedly")
-                    raise multiprocessing.ProcessError("Death process")
+
+            if self._webhook_server_process is not None and not self._webhook_server_process.is_alive():
+                self._logger.error(f"Webhook Server Process died unexpectedly")
+                raise multiprocessing.ProcessError("Death process")
 
             if not skip_controllers:
                 for ctrl in self._controllers:
@@ -307,7 +304,7 @@ class Operator:
                 ctrl.stop()
                 
             alive_threads = self._threads
-            self._logger.info(f"waiting for {len(alive_threads)} threads in the operator to stop...")
+            self._logger.debug(f"waiting for {len(alive_threads)} threads in the operator to stop...")
             self._stop.set()
             while len(alive_threads) > 0:
                 alive_threads = [thread for thread in self._threads if thread.is_alive() and isinstance(thread, threading.Thread)]

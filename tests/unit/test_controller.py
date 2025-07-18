@@ -65,7 +65,7 @@ def fail_webhook():
 
 def make_controller():
     with patch("kuroboros.controller.Controller._check_permissions"):
-        return Controller("dummy-controller", group_version_info(), reconciler())
+        return Controller("DummyController", group_version_info(), reconciler())
 
 
 class TestController(unittest.TestCase):
@@ -73,16 +73,16 @@ class TestController(unittest.TestCase):
         self.controller = make_controller()
 
     def test_controller_init_sets_attributes(self):
-        self.assertEqual(self.controller.name, "Dummy-controllerV1StableController")
+        self.assertEqual(self.controller.name, "DummycontrollerV1StableController")
         self.assertIsInstance(self.controller.reconciler, DummyReconciler)
         
     def test_controller_webhook_reconciler_equals_crd_cls(self):
         with patch("kuroboros.controller.Controller._check_permissions"):
-            ctrl = Controller("dummy-controller", group_version_info(), reconciler(), webhook())
+            ctrl = Controller("DummyController", group_version_info(), reconciler(), webhook())
             self.assertIsInstance(ctrl, Controller)
             
             with self.assertRaises(RuntimeError):
-                Controller("dummy-controller", group_version_info(), reconciler(), fail_webhook())
+                Controller("DummyController", group_version_info(), reconciler(), fail_webhook())
             
         
 
@@ -186,7 +186,7 @@ class TestController(unittest.TestCase):
             mock_instance = mock_api.return_value
             # Simulate allowed for all verbs
             mock_instance.create_self_subject_access_review.return_value.status = MagicMock(allowed=True, denied=False)
-            ctrl = Controller("dummy-controller", group_version_info(), reconciler())
+            ctrl = Controller("DummyController", group_version_info(), reconciler())
             # Should not raise
             ctrl._check_permissions()
 
@@ -203,7 +203,4 @@ class TestController(unittest.TestCase):
                 return Review()
             mock_instance.create_self_subject_access_review.side_effect = denied_review
             with self.assertRaises(RuntimeWarning):
-                Controller("dummy-controller", group_version_info(), reconciler())
-
-if __name__ == "__main__":
-    unittest.main()
+                Controller("DummyController", group_version_info(), reconciler())

@@ -365,13 +365,13 @@ class Controller:
         wait_for_stop: List[threading.Thread] = []
         for member in self._members:
             thread, stop = self._members[member]
-            self._logger.info(f"sending stop event to {self._group_version_info.pretty_kind_str(member)}")
+            self._logger.debug(f"sending stop event to {self._group_version_info.pretty_kind_str(member)}")
             stop.set()
             wait_for_stop.append(thread)
             
         alive_threads = wait_for_stop
         if len(alive_threads) > 0:
-            self._logger.info(f"waiting for {len(alive_threads)} reconcilation loop(s) thread(s) to stop...")
+            self._logger.debug(f"waiting for {len(alive_threads)} reconcilation loop(s) thread(s) to stop...")
             while len(alive_threads) > 0:
                 alive_threads = [thread for thread in wait_for_stop if thread.is_alive()]
                 time.sleep(0.5)

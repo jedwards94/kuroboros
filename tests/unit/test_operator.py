@@ -101,5 +101,3 @@ class TestOperator(unittest.TestCase):
                     pass
             metric.labels.assert_called()
 
-if __name__ == '__main__':
-    unittest.main()

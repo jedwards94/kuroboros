@@ -35,13 +35,8 @@ class TestInit(unittest.TestCase):
         self.assertIsInstance(reconciler, TestReconciler)
 
     def test_invalid(self):
-        try:
+        with self.assertRaises(RuntimeError):
             InvalidReconciler(test_api_group)
-        except Exception as e:
-            self.assertIsInstance(e, RuntimeError)
-            return
-        
-        raise Exception("Test ended without error")
 
 
 class LoopTest(BaseReconciler[TestCrd]):

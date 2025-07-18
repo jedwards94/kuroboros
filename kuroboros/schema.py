@@ -98,7 +98,7 @@ class BaseCRD:
         self.read_only = read_only
         return
     
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         if self.group_version is not None:
             return f"{self.group_version.pretty_kind_str((self.metadata['namespace'], self.metadata['name']))}"
         return f"{self.__class__.__name__}(Name={self.metadata['name']}, Namespace={self.metadata['namespace']})"

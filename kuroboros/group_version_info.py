@@ -85,6 +85,6 @@ class GroupVersionInfo:
         return self._key() < other._key()
 
     def __repr__(self):
-        return f"GroupVersionInfo('version: {self.api_version}, group: {self.group}')"
+        return f"GroupVersionInfo(version={self.api_version}, group={self.group})"
     
     
