@@ -17,7 +17,7 @@ from kuroboros.cli.generate import (
     rbac_operator_role,
     rbac_operator_role_binding,
     rbac_sa,
-    validation_webhook_config
+    validation_webhook_config,
 )
 
 from kuroboros.cli.new import (
@@ -121,6 +121,7 @@ def rbac():
     create_file(output, "leader-election-role-binding.yaml", rbac_leader_role_binding())
     create_file(output, "kustomization.yaml", kustomize_file(resources))
 
+
 @generate.command(help="Generates the Webhooks YAML manifests")
 def webhooks():
     click.echo("🌀 Generating Webhooks YAMLs")
@@ -128,15 +129,27 @@ def webhooks():
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, WEBHOOKS_OUT)
 
     resources = []
-    ctrls_with_validation_webhooks = [ctrl for ctrl in controllers if ctrl.validation_webhook is not None]
-    ctrls_with_mutation_webhooks = [ctrl for ctrl in controllers if ctrl.mutation_webhook is not None]
+    ctrls_with_validation_webhooks = [
+        ctrl for ctrl in controllers if ctrl.validation_webhook is not None
+    ]
+    ctrls_with_mutation_webhooks = [
+        ctrl for ctrl in controllers if ctrl.mutation_webhook is not None
+    ]
 
     if len(ctrls_with_validation_webhooks) > 0:
-        create_file(output, "validation-webhooks.yaml", validation_webhook_config(ctrls_with_validation_webhooks))
+        create_file(
+            output,
+            "validation-webhooks.yaml",
+            validation_webhook_config(ctrls_with_validation_webhooks),
+        )
         resources.append("validation-webhooks.yaml")
-    
+
     if len(ctrls_with_validation_webhooks) > 0:
-        create_file(output, "mutation-webhooks.yaml", mutation_webhook_config(ctrls_with_mutation_webhooks))
+        create_file(
+            output,
+            "mutation-webhooks.yaml",
+            mutation_webhook_config(ctrls_with_mutation_webhooks),
+        )
         resources.append("mutation-webhooks.yaml")
     if len(resources) > 0:
         create_file(output, "kustomization.yaml", kustomize_file(resources))
@@ -152,7 +165,11 @@ def deployment(ctx):
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, DEPLOYMENT_OUT)
 
     config_file = ctx.obj["config_file"]
-    resources = ["operator-deployment.yaml", "operator-config.yaml", "metrics-service.yaml"]
+    resources = [
+        "operator-deployment.yaml",
+        "operator-config.yaml",
+        "metrics-service.yaml",
+    ]
     include_webhook_service = False
     for ctrl in controllers:
         if ctrl.has_webhooks():
@@ -176,8 +193,8 @@ def deployment(ctx):
         ]
 
     if include_webhook_service:
-            create_file(output, "webhook-service.yaml", operator_webhook_service()) 
-            resources.append("webhook-service.yaml")
+        create_file(output, "webhook-service.yaml", operator_webhook_service())
+        resources.append("webhook-service.yaml")
     create_file(output, "metrics-service.yaml", operator_metrics_service())
     create_file(output, "operator-deployment.yaml", operator_deployment())
     create_file(output, "operator-config.yaml", operator_config(config_file))
@@ -266,7 +283,12 @@ def deploy(overlay):
 
 
 @cli.command(help="Build the image")
-def build():
+@click.option(
+    "--build-arg",
+    multiple=True,
+    help="Build arguments to pass to Docker (format: key=val). Can be specified multiple times.",
+)
+def build(build_arg):
     reg = config.get("generate.deployment.image", "registry", fallback="")
     repo = config.get(
         "generate.deployment.image", "repository", fallback="kuroboros-operator"
@@ -275,8 +297,16 @@ def build():
     img = f"{repo}:{tag}"
     if reg != "":
         img = f"{reg}/{img}"
+    # Parse build-args into a dict
+    build_args = {}
+    for arg in build_arg:
+        if "=" in arg:
+            k, v = arg.split("=", 1)
+            build_args[k] = v
+        else:
+            raise click.BadParameter(f"Invalid build-arg format: '{arg}', expected key=val")
     click.echo(f"🌀 Building Kuroboros Operator image with tag {img}")
-    docker_build(img)
+    docker_build(img, args=build_args)
     click.echo(f"🌀 Done building Kuroboros Operator image")
 
 
@@ -296,26 +326,10 @@ def build():
 def start(skip_controllers, skip_webhook_server):
     operator = Operator()
     click.echo(f"🌀🐍 Starting {operator.name} ...")
-    for ctrl in controllers:
-        run_version = ctrl.get_run_version()
-        if run_version.reconciler is None:
-            raise RuntimeError(f"reconciler `None` in {ctrl.name} {run_version.name}")
-
-        try:
-            operator.add_controller(
-                name=ctrl.name,
-                group_version=ctrl.group_version_info,
-                reconciler=run_version.reconciler,
-                validation_webhook=run_version.validation_webhook,
-                mutation_webhook=run_version.mutation_webhook,
-            )
-
-        except Exception as e:
-            click.echo(e)
-            continue
-
     operator.start(
-        skip_webhook_server=skip_webhook_server, skip_controllers=skip_controllers
+        controllers=controllers,
+        skip_webhook_server=skip_webhook_server,
+        skip_controllers=skip_controllers,
     )
     return
 

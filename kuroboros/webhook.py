@@ -5,7 +5,7 @@ import falcon
 from kuroboros import logger
 from kuroboros.exceptions import MutationWebhookError, ValidationWebhookError
 from kuroboros.group_version_info import GroupVersionInfo
-from kuroboros.schema import BaseCRD, prop
+from kuroboros.schema import BaseCRD
 import json
 import jsonpatch
 import base64
@@ -92,8 +92,8 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
         # Implement your validation logic here
         # For now, we assume the data is always valid
         pass
-
-    def validate_delete(self) -> None:
+    
+    def validate_delete(self, old_data: T) -> None:
         # Implement your validation logic here
         # For now, we assume the data is always valid
         pass
@@ -136,8 +136,11 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
             elif operation == "DELETE":
                 assert (
                     crd_instance is None
-                ), "CRD instance should be None for delete operation"
-                self.validate_delete()
+                ), "CRD instance must be None for delete operation"
+                assert (
+                    old_crd_instance is not None
+                ), "old CRD instance cannot be None for delete operation"
+                self.validate_delete(old_crd_instance)
             else:
                 raise ValidationWebhookError(f"unsupported operation: {operation}")
 

@@ -27,7 +27,9 @@ class DummyValidationWebhook(BaseValidationWebhook[DummyCRD]):
         if getattr(data, "fail", False):
             raise ValidationWebhookError("Update failed")
 
-    def validate_delete(self) -> None:
+    def validate_delete(self, old_data: DummyCRD) -> None:
+        if getattr(old_data, "fail", False):
+            raise ValidationWebhookError("Update failed")
         pass
 
 
@@ -99,7 +101,7 @@ class TestValidationWebhook(unittest.TestCase):
         admission_review = {
             "apiVersion": "admission.k8s.io/v1",
             "kind": "AdmissionReview",
-            "request": {"uid": "123", "operation": "DELETE", "object": None},
+            "request": {"uid": "123", "operation": "DELETE", "object": None, "oldObject": { "fail": False }},
         }
         body = json.dumps(admission_review).encode("utf-8")
         resp, status, headers = self.webhook.process(body)

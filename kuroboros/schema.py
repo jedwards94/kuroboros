@@ -1,4 +1,4 @@
-from typing import Any, List, Tuple, Dict, TypeVar, cast, get_args, get_origin
+from typing import Any, ClassVar, List, Tuple, Dict, TypeVar, cast, get_args, get_origin
 from kubernetes import client
 import copy
 
@@ -13,6 +13,7 @@ class CRDProp:
     args: dict
     subprops: dict | None
     subtype: str | None
+    real_type: Any
 
     def __init__(
         self,
@@ -29,15 +30,63 @@ class CRDProp:
         self.args = kwargs
 
 
-T = TypeVar("T")
+class BaseCRDProp:
+    _data: dict = {}
+    _parent_data: dict | None = None
+    _parent_key: str | None = None
 
+    def __init__(self, *, data, _parent_data=None, _parent_key=None, **kwargs):
+        self._data = data
+        self._parent_key = _parent_key
+        # ALWAYS set _parent_data at the end of __init__ to avoid recursion
+        self._parent_data = _parent_data
+
+    @classmethod
+    def to_prop_dict(cls) -> dict:
+        """
+        Returns a dict of all CRDProp properties defined in the class (including inherited).
+        """
+        props = {}
+        for base in reversed(cls.__mro__):
+            for k, v in base.__dict__.items():
+                if isinstance(v, CRDProp):
+                    props[k] = v
+        return props
+
+    def __getattribute__(self, name: str):
+        data = object.__getattribute__(self, "_data")
+        attr = object.__getattribute__(self, name)
+        try:
+            if isinstance(attr, CRDProp):
+                if issubclass(attr.real_type, BaseCRDProp):
+                    inst = attr.real_type(
+                        data=data[name], _parent_data=data, _parent_key=name
+                    )
+                    return inst
+                return data[name]
+            else:
+                return attr
+        except Exception:
+            return None
+
+    def __setattr__(self, name, value):
+        # ... your normal logic ...
+        # If setting a property, update both self._data and parent if present
+        if hasattr(self, "_parent_data") and self._parent_data is not None:
+            self._data[name] = value
+            self._parent_data[self._parent_key][name] = value
+        else:
+            object.__setattr__(self, name, value)
+
+
+T = TypeVar("T")
 
 def prop(
     typ: type[T],
     required=False,
     properties: dict[str, Any] | None = None,
     **kwargs: Any,
-) -> T | None:
+) -> T:
     type_map = {
         str: "string",
         int: "integer",
@@ -50,9 +99,16 @@ def prop(
         list[bool]: "array",
     }
     t = type_map.get(typ, None)
+    if issubclass(typ, BaseCRDProp):
+        if properties is not None:
+            raise RuntimeError(
+                "a prop of a type inherited from BaseCRDProp cannot have properties defined in it"
+            )
+        t = "object"
+        properties = typ.to_prop_dict()
     if t is None:
         raise TypeError(
-            f"the prop type cant be `{typ}`, only types `{'`, `'.join([k.__name__ for k in type_map.keys()])}` are allowed"
+            f"`{typ}` not suported, only `{'`, `'.join([k.__name__ for k in type_map.keys()])}` and subclasses of `BaseCRDProp` are allowed"
         )
 
     if t == "array":
@@ -71,8 +127,9 @@ def prop(
                         **kwargs,
                     ),
                 )
-
-    return cast(T, CRDProp(type=t, required=required, properties=properties, **kwargs))
+    p = CRDProp(type=t, required=required, properties=properties, **kwargs)
+    p.real_type = typ
+    return cast(T, p)
 
 
 class BaseCRD:
@@ -90,14 +147,14 @@ class BaseCRD:
         read_only: bool = False,
         data: Dict = {},
     ):
-        if read_only == True and data == {}:
+        if read_only and data == {}:
             raise ValueError("read_only CRD must have data provided")
         self._data = copy.deepcopy(data)
         self.api = api
         self.group_version = group_version
         self.read_only = read_only
         return
-    
+
     def __repr__(self) -> str:
         if self.group_version is not None:
             return f"{self.group_version.pretty_kind_str((self.metadata['namespace'], self.metadata['name']))}"
@@ -111,7 +168,7 @@ class BaseCRD:
             self._data = copy.deepcopy(data._data)
             return
         self._data = copy.deepcopy(dict(data))
-        
+
     def get_data(self) -> Dict[str, Any]:
         """
         Returns the data of the CRD object as a dict
@@ -139,11 +196,9 @@ class BaseCRD:
             raise RuntimeError("`patch` used when api is `None`")
         if self.group_version is None:
             raise RuntimeError("`patch` used when group_version is `None`")
-        
+
         if self.read_only:
-            raise RuntimeError(
-                f"Cannot call `patch` on read-only CRD object `{self}`"
-            )
+            raise RuntimeError(f"Cannot call `patch` on read-only CRD object `{self}`")
 
         new_state = self.get_data()
         if self.group_version.scope == "Namespaced":
@@ -173,14 +228,28 @@ class BaseCRD:
     def __getattribute__(self, name: str):
         data = object.__getattribute__(self, "_data")
         attr = object.__getattribute__(self, name)
+
         try:
             if name == "status" or name == "metadata":
+                if isinstance(attr, CRDProp) and issubclass(
+                    attr.real_type, BaseCRDProp
+                ):
+                    inst = attr.real_type(data=data[name])
+                    return inst
                 return data[name]
             elif isinstance(attr, CRDProp):
+                if issubclass(attr.real_type, BaseCRDProp):
+                    inst = attr.real_type(
+                        data=data["spec"][name],
+                        _parent_data=data["spec"],
+                        _parent_key=name,
+                    )
+                    return inst
                 return data["spec"][name]
             else:
                 return attr
-        except Exception:
+        except Exception as e:
+            print(e)
             return None
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -247,7 +316,9 @@ class BaseCRD:
     @property
     def metadata(self) -> Dict[Any, Any]:
         if "metadata" not in self._data.keys():
-            raise RuntimeError(f"method called at wrong time, no metadata present at {self}")
+            raise RuntimeError(
+                f"method called at wrong time, no metadata present at {self}"
+            )
         return self._data["metadata"]
 
     @metadata.setter

@@ -3,7 +3,7 @@ import inspect
 import os
 from pathlib import Path
 import subprocess
-from typing import List
+from typing import List, Type
 import click
 
 from kuroboros.controller import ControllerConfig, ControllerConfigVersions
@@ -183,6 +183,3 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
 
     
     return controllers_configs
-
-
-

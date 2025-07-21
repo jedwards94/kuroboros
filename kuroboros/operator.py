@@ -14,7 +14,7 @@ from kuroboros.config import (
     OPERATOR_NAMESPACE,
     config as kuroboros_config,
 )
-from kuroboros.controller import Controller
+from kuroboros.controller import Controller, ControllerConfig
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler 
 from kuroboros.utils import event_aware_sleep
@@ -91,7 +91,7 @@ class Operator:
     def controllers(self) -> List[Controller]:
         return self._controllers.copy()
 
-    def add_controller(
+    def _add_controller(
         self,
         name: str,
         group_version: GroupVersionInfo,
@@ -192,7 +192,7 @@ class Operator:
             event_aware_sleep(self._stop, self.__METRICS_INTERVAL)
 
     def start(
-        self, skip_controllers: bool = False, skip_webhook_server: bool = False
+        self, controllers: List[ControllerConfig], skip_controllers: bool = False, skip_webhook_server: bool = False
     ) -> None:
         if skip_controllers and skip_webhook_server:
             raise RuntimeError(
@@ -203,6 +203,25 @@ class Operator:
 
         if len(self._controllers) == 0:
             raise RuntimeError("no controllers found to run the operator")
+        
+        # Add Controllers from controller configs
+        for ctrl in controllers:
+            run_version = ctrl.get_run_version()
+            if run_version.reconciler is None:
+                raise RuntimeError(f"reconciler `None` in {ctrl.name} {run_version.name}")
+
+            try:
+                self._add_controller(
+                    name=ctrl.name,
+                    group_version=ctrl.group_version_info,
+                    reconciler=run_version.reconciler,
+                    validation_webhook=run_version.validation_webhook,
+                    mutation_webhook=run_version.mutation_webhook,
+                )
+
+            except Exception as e:
+                self._logger.warning(e)
+                continue
 
         # Start the webhook server if needed
         if not skip_webhook_server:
