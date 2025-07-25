@@ -1,9 +1,9 @@
+import concurrent
 import concurrent.futures
 import threading
 import time
 from typing import Callable, ParamSpec, TypeVar
 
-import concurrent
 
 
 def event_aware_sleep(event: threading.Event, timeout: float):
@@ -20,7 +20,7 @@ def event_aware_sleep(event: threading.Event, timeout: float):
         time.sleep(sleep_time)
         elapsed = time.time() - start_time
         remaining = timeout - elapsed
-    pass
+    return
 
 
 T = TypeVar("T")
@@ -35,6 +35,9 @@ def with_timeout(
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> T:
+    """
+    Runs a function in a ThreadPoolExecutor and send a cancel event to it on SIGINT or timeout
+    """
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(func, *args, **kwargs)
     start_time = time.time()

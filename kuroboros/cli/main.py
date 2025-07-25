@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
+from importlib.metadata import version as pyver
 import sys
+
 import click
 
 from kuroboros.cli.build import docker_build
@@ -32,9 +34,9 @@ from kuroboros.cli.utils import create_file, load_controller_configs
 from kuroboros.config import config
 from kuroboros.operator import Operator
 
-from importlib.metadata import version
 
-VERSION_NUM = version("kuroboros")
+
+VERSION_NUM = pyver("kuroboros")
 
 
 KUSTOMIZE_OUT = "config/base"
@@ -45,8 +47,6 @@ WEBHOOKS_OUT = "webhooks"
 DEPLOYMENT_OUT = "deployment"
 
 sys.path.insert(0, str(Path().absolute()))
-# crds = load_from_path(CRD_PATH, BaseCRD, api=None)
-# reconcilers = load_from_path(RECONCILER_PATH, BaseReconciler)
 
 controllers = load_controller_configs("controllers")
 
@@ -60,26 +60,38 @@ controllers = load_controller_configs("controllers")
     help="Configuration file to use [default: opearator.conf]",
 )
 @click.pass_context
-def cli(ctx, config_file):
+def cli(ctx: click.Context, config_file):
+    """
+    The CLI entrypoint
+
+    Kuroboros Framework {VERSION_NUM}
+    """
     ctx.ensure_object(dict)
     ctx.obj["config_file"] = config_file
     config.read(config_file)
-    pass
 
 
 @cli.command("version", help="Get kuroboros version")
 def version_cli():
+    """
+    Get kuroboros version
+    """
     click.echo(VERSION_NUM)
 
 
 @cli.group(help="Generate the kubernetes resources manifests to deploy the operator")
 @click.pass_context
-def generate(ctx: click.Context):
-    pass
+def generate(ctx: click.Context): #pylint: disable=unused-argument
+    """
+    Generate the kubernetes resources manifests to deploy the operator
+    """
 
 
 @generate.command(help="Generates the CRDs YAML manifests")
 def crd():
+    """
+    Generates the CRDs YAML manifests
+    """
     click.echo("🌀 Generating CRD YAMLs")
     click.echo(f"{KUSTOMIZE_OUT}/{CRD_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, CRD_OUT)
@@ -87,13 +99,14 @@ def crd():
     resources = []
     versions_dict = {}
     for ctrl_conf in controllers:
+        versions_dict[ctrl_conf.name] = {}
         for version in ctrl_conf.versions:
-            versions_dict[version.name] = version.crd
+            versions_dict[ctrl_conf.name][version.name] = version.crd
 
         create_file(
             output,
             f"{ctrl_conf.group_version_info.kind}.yaml",
-            crd_schema(versions_dict, ctrl_conf.group_version_info),
+            crd_schema(versions_dict[ctrl_conf.name], ctrl_conf.group_version_info),
         )
         resources.append(f"{ctrl_conf.group_version_info.kind}.yaml")
 
@@ -102,6 +115,9 @@ def crd():
 
 @generate.command(help="Generates the RBAC YAML manifests")
 def rbac():
+    """
+    Generates the RBAC YAML manifests
+    """
     click.echo("🌀 Generating RBAC YAMLs")
     click.echo(f"{KUSTOMIZE_OUT}/{RBAC_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, RBAC_OUT)
@@ -124,6 +140,9 @@ def rbac():
 
 @generate.command(help="Generates the Webhooks YAML manifests")
 def webhooks():
+    """
+    Generates the Webhooks YAML manifests
+    """
     click.echo("🌀 Generating Webhooks YAMLs")
     click.echo(f"{KUSTOMIZE_OUT}/{WEBHOOKS_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, WEBHOOKS_OUT)
@@ -160,6 +179,9 @@ def webhooks():
 @generate.command(help="Generates the Deployment YAML manifests")
 @click.pass_context
 def deployment(ctx):
+    """
+    Generates the Deployment YAML manifests
+    """
     click.echo("🌀 Generating Deployment YAMLs")
     click.echo(f"{KUSTOMIZE_OUT}/{DEPLOYMENT_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, DEPLOYMENT_OUT)
@@ -204,6 +226,9 @@ def deployment(ctx):
 @generate.command(help="Generates all the YAML manifests")
 @click.pass_context
 def manifests(ctx):
+    """
+    Generates all the YAML manifests
+    """
     ctx.invoke(crd)
     ctx.invoke(rbac)
     ctx.invoke(deployment)
@@ -213,6 +238,9 @@ def manifests(ctx):
 @generate.command(help="Generate a new overlay in config/overlays")
 @click.argument("name")
 def overlay(name):
+    """
+    Generate a new overlay in config/overlays
+    """
     click.echo(f"🌀 Creating new overlay {name}")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OVERLAYS, name)
     paths = ["../../base/rbac", "../../base/crd", "../../base/deployment"]
@@ -227,7 +255,9 @@ def overlay(name):
 
 @cli.group(help="Creates a new Kuroboros Resource")
 def new():
-    pass
+    """
+    Creates a new Kuroboros Resource
+    """
 
 
 @new.command(help="Creates a Controller with a base version, a reconciler and its CRD")
@@ -240,12 +270,15 @@ def new():
 )
 @click.option("--group", type=str, required=True, help="The group owner of the CRD")
 def controller(kind: str, api_version: str, group: str):
+    """
+    Creates a Controller with a base version, a reconciler and its CRD
+    """
     click.echo(f"🐍 Creating {kind} Controller")
     rec = new_reconciler(kind)
-    crd = new_crd(kind)
+    crd_data = new_crd(kind)
     group_versions = new_group_versions(api_version, group, kind)
 
-    click.echo(f"controllers/")
+    click.echo("controllers/")
     create_file(
         f"controllers/{kind.lower()}",
         "group_version.py",
@@ -259,13 +292,16 @@ def controller(kind: str, api_version: str, group: str):
         overwrite=False,
     )
     create_file(
-        f"controllers/{kind.lower()}/{api_version}", "crd.py", crd, overwrite=False
+        f"controllers/{kind.lower()}/{api_version}", "crd.py", crd_data, overwrite=False
     )
 
 
 @new.command(help="Creates a new Kuroboros Operator project")
 @click.argument("name", type=str)
 def operator(name):
+    """
+    Creates a new Kuroboros Operator project
+    """
     click.echo(f"🌀🐍 Creating {name} Operator")
     conf = new_config(name)
     dockerfile = new_dockerfile()
@@ -277,7 +313,10 @@ def operator(name):
 
 @cli.command(help="Applies the given overlay to the current context")
 @click.argument("overlay", type=str)
-def deploy(overlay):
+def deploy(overlay): # pylint: disable=redefined-outer-name
+    """
+    Applies the given overlay to the current context
+    """
     click.echo(f"🌀 Deploying Operator from {overlay} overlay")
     kubectl_kustomize_apply(overlay)
 
@@ -289,6 +328,11 @@ def deploy(overlay):
     help="Build arguments to pass to Docker (format: key=val). Can be specified multiple times.",
 )
 def build(build_arg):
+    """
+    Build the image
+
+    Build arguments to pass to Docker (format: key=val). Can be specified multiple times.
+    """
     reg = config.get("generate.deployment.image", "registry", fallback="")
     repo = config.get(
         "generate.deployment.image", "repository", fallback="kuroboros-operator"
@@ -307,7 +351,7 @@ def build(build_arg):
             raise click.BadParameter(f"Invalid build-arg format: '{arg}', expected key=val")
     click.echo(f"🌀 Building Kuroboros Operator image with tag {img}")
     docker_build(img, args=build_args)
-    click.echo(f"🌀 Done building Kuroboros Operator image")
+    click.echo("🌀 Done building Kuroboros Operator image")
 
 
 @cli.command(help="Starts the Kuroboros Operator")
@@ -324,15 +368,20 @@ def build(build_arg):
     help="Skips the webhook server startup",
 )
 def start(skip_controllers, skip_webhook_server):
-    operator = Operator()
-    click.echo(f"🌀🐍 Starting {operator.name} ...")
-    operator.start(
+    """
+    Starts the Kuroboros Operator
+
+    --skip-controllers: Skips all controllers startup
+    --skip-webhook-server: Skips the webhook server startup
+    """
+    op = Operator()
+    click.echo(f"🌀🐍 Starting {op.name} ...")
+    op.start(
         controllers=controllers,
         skip_webhook_server=skip_webhook_server,
         skip_controllers=skip_controllers,
     )
-    return
 
 
 if __name__ == "__main__":
-    cli(auto_envvar_prefix="KUROBOROS")
+    cli(auto_envvar_prefix="KUROBOROS") # pylint: disable=no-value-for-parameter

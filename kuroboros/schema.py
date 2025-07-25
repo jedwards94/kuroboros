@@ -1,6 +1,16 @@
-from typing import Any, ClassVar, List, Tuple, Dict, TypeVar, cast, get_args, get_origin
-from kubernetes import client
 import copy
+from typing import (
+    Any,
+    List,
+    Tuple,
+    Dict,
+    Type,
+    TypeVar,
+    cast,
+    get_args,
+    get_origin,
+)
+from kubernetes import client
 
 from kubernetes.client import V1OwnerReference
 
@@ -8,6 +18,9 @@ from kuroboros.group_version_info import GroupVersionInfo
 
 
 class CRDProp:
+    """
+    The class that is mapped to YAML
+    """
     typ: str
     required: bool
     args: dict
@@ -17,13 +30,13 @@ class CRDProp:
 
     def __init__(
         self,
-        type: str,
+        typ: str,
         subtype: str | None = None,
         required: bool = False,
         properties: dict | None = None,
         **kwargs,
     ):
-        self.typ = type
+        self.typ = typ
         self.required = required
         self.subprops = properties
         self.subtype = subtype
@@ -31,11 +44,14 @@ class CRDProp:
 
 
 class BaseCRDProp:
+    """
+    The base class for a object prop of a CRD
+    """
     _data: dict = {}
     _parent_data: dict | None = None
     _parent_key: str | None = None
 
-    def __init__(self, *, data, _parent_data=None, _parent_key=None, **kwargs):
+    def __init__(self, *, data, _parent_data=None, _parent_key=None, **_):
         self._data = data
         self._parent_key = _parent_key
         # ALWAYS set _parent_data at the end of __init__ to avoid recursion
@@ -66,11 +82,10 @@ class BaseCRDProp:
                 return data[name]
             else:
                 return attr
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             return None
 
     def __setattr__(self, name, value):
-        # ... your normal logic ...
         # If setting a property, update both self._data and parent if present
         if hasattr(self, "_parent_data") and self._parent_data is not None:
             self._data[name] = value
@@ -81,12 +96,18 @@ class BaseCRDProp:
 
 T = TypeVar("T")
 
+
 def prop(
     typ: type[T],
     required=False,
     properties: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> T:
+    """
+    Define a propertie of a CRD, the available types are 
+    `str`, `int`, `float`, `dict`, `bool`, `list[Any]` and
+    subclasses of `BaseCRDProp`
+    """
     type_map = {
         str: "string",
         int: "integer",
@@ -107,8 +128,10 @@ def prop(
         t = "object"
         properties = typ.to_prop_dict()
     if t is None:
+        supported_types = "`, `".join([k.__name__ for k in type_map])
         raise TypeError(
-            f"`{typ}` not suported, only `{'`, `'.join([k.__name__ for k in type_map.keys()])}` and subclasses of `BaseCRDProp` are allowed"
+            f"`{typ}` not suported",
+            f"only `{supported_types}` and subclasses of `BaseCRDProp` are allowed",
         )
 
     if t == "array":
@@ -133,6 +156,10 @@ def prop(
 
 
 class BaseCRD:
+    """
+    Defines the CRD class for your Reconciler and Webhooks
+    """
+
     # instance properties
     api: client.CustomObjectsApi | None
     group_version: GroupVersionInfo | None
@@ -140,32 +167,118 @@ class BaseCRD:
     read_only = False
     _data: dict = {}
 
+    T = TypeVar("T", bound="BaseCRD")
+
+    @classmethod
+    def create_namespaced(
+        cls: Type[T],
+        api: client.CustomObjectsApi,
+        group_version: GroupVersionInfo,
+        namespace: str,
+        name: str,
+        spec: Dict,
+        metadata: Dict | None = None,
+    ) -> T:
+        """
+        Creates a new instance of the CRD in the specified namespace.
+        """
+        if metadata is None:
+            metadata = {}
+        metadata["name"] = name
+        data = {
+            "metadata": metadata,
+            "spec": spec,
+        }
+        instance = cls(api=api, group_version=group_version, read_only=False, data=data)
+        cluster_data = api.create_namespaced_custom_object(
+            group=group_version.group,
+            namespace=namespace,
+            version=group_version.api_version,
+            plural=group_version.plural,
+            body={
+                "kind": group_version.kind,
+                "apiVersion": f"{group_version.group}/{group_version.api_version}",
+                **instance.get_data(),
+            },
+        )
+        instance.load_data(cluster_data)
+        return instance
+
+    @classmethod
+    def get_namespaced(
+        cls: Type[T],
+        api: client.CustomObjectsApi,
+        group_version: GroupVersionInfo,
+        namespace: str,
+        name: str,
+    ) -> T:
+        """
+        Get a CRD with name and namespace from the cluster
+        """
+        response = api.get_namespaced_custom_object(
+            group=group_version.group,
+            namespace=namespace,
+            name=name,
+            version=group_version.api_version,
+            plural=group_version.plural,
+        )
+        instance = cls(api=api, group_version=group_version, read_only=False)
+        instance.load_data(response)
+        return instance
+
+    @classmethod
+    def list_namespaced(
+        cls: Type[T],
+        api: client.CustomObjectsApi,
+        group_version: GroupVersionInfo,
+        namespace: str,
+        **kwargs,
+    ) -> List[T]:
+        """
+        Get a CRD List with name and namespace from the cluster
+        """
+        instances = []
+        response = api.list_namespaced_custom_object(
+            group=group_version.group,
+            namespace=namespace,
+            version=group_version.api_version,
+            plural=group_version.plural,
+            **kwargs,
+        )
+        for raw in response:
+            inst = cls(api=api, group_version=group_version, read_only=False)
+            inst.load_data(raw)
+            instances.append(inst)
+
+        return instances
+
     def __init__(
         self,
         api: client.CustomObjectsApi | None = None,
         group_version: GroupVersionInfo | None = None,
         read_only: bool = False,
-        data: Dict = {},
+        data: Dict | None = None,
     ):
+        if data is None:
+            data = {}
         if read_only and data == {}:
             raise ValueError("read_only CRD must have data provided")
         self._data = copy.deepcopy(data)
         self.api = api
         self.group_version = group_version
         self.read_only = read_only
-        return
 
     def __repr__(self) -> str:
         if self.group_version is not None:
-            return f"{self.group_version.pretty_kind_str((self.metadata['namespace'], self.metadata['name']))}"
-        return f"{self.__class__.__name__}(Name={self.metadata['name']}, Namespace={self.metadata['namespace']})"
+            return f"{self.group_version.pretty_kind_str(self.namespace_name)}"
+        return super().__repr__()
 
     def load_data(self, data: Any):
         """
         loads an object as a `dict` into the class to get the values
         """
         if isinstance(data, self.__class__):
-            self._data = copy.deepcopy(data._data)
+            self._data = copy.deepcopy(data.get_data())
             return
         self._data = copy.deepcopy(dict(data))
 
@@ -248,8 +361,7 @@ class BaseCRD:
                 return data["spec"][name]
             else:
                 return attr
-        except Exception as e:
-            print(e)
+        except Exception:  # pylint: disable=broad-except
             return None
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -265,7 +377,7 @@ class BaseCRD:
                 self._data["spec"][name] = value
             else:
                 return object.__setattr__(self, name, value)
-        except:
+        except Exception:  # pylint: disable=broad-except
             return object.__setattr__(self, name, value)
 
     def add_finalizer(self, finalizer: str):
@@ -294,6 +406,9 @@ class BaseCRD:
             return
 
     def get_owner_ref(self, block_self_deletion: bool = True) -> V1OwnerReference:
+        """
+        Creates a V1OwnerRef to the current CRD
+        """
         if self.api is None:
             raise RuntimeError("`patch` used when api is `None`")
         if self.group_version is None:
@@ -315,6 +430,9 @@ class BaseCRD:
 
     @property
     def metadata(self) -> Dict[Any, Any]:
+        """
+        Gets the metadata of the resource as a `Dict`
+        """
         if "metadata" not in self._data.keys():
             raise RuntimeError(
                 f"method called at wrong time, no metadata present at {self}"
@@ -326,7 +444,6 @@ class BaseCRD:
         """
         Placeholder to set metadata
         """
-        pass
 
     @property
     def name(self) -> str:
@@ -354,6 +471,9 @@ class BaseCRD:
 
     @property
     def finalizers(self) -> List[str]:
+        """
+        Gets the finalizers of the resource
+        """
         if "finalizers" not in self.metadata:
             return []
 
@@ -361,6 +481,9 @@ class BaseCRD:
 
     @property
     def uid(self) -> str:
+        """
+        Get the UID of the resource
+        """
         return self.metadata["uid"]
 
     @property

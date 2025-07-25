@@ -4,16 +4,22 @@ import sys
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.schema import BaseCRD
 
-stdout_handler = logging.StreamHandler(stream=sys.stdout)
+FMT = "timestamp=%(asctime)s name=%(name)s level=%(levelname)s msg=\"%(message)s\""
+
 
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
-fmt = "timestamp=%(asctime)s name=%(name)s level=%(levelname)s msg=\"%(message)s\""
-formater = logging.Formatter(fmt)
+formater = logging.Formatter(FMT)
+
+stdout_handler = logging.StreamHandler(stream=sys.stdout)
 stdout_handler.setFormatter(formater)
+
 root_logger.addHandler(stdout_handler)
 
 class StaticInfoFilter(logging.Filter):
+    """
+    class to add static field to the logger
+    """
     def __init__(self, static_fields):
         super().__init__()
         self.static_fields = static_fields
@@ -25,6 +31,13 @@ class StaticInfoFilter(logging.Filter):
 
 
 def reconciler_logger(group_version: GroupVersionInfo, crd: BaseCRD):
+    """
+    Creates a new logger with the format 
+    "timestamp=%(asctime)s name=%(name)s " 
+    "resource_version=%(resource_version)s " 
+    "level=%(levelname)s msg=\"%(message)s\""
+    used in the `reconcile` function
+    """
     crd_logger = logging.getLogger(f"{group_version.pretty_kind_str(crd.namespace_name)}")
     crd_logger.propagate = False
     filt = StaticInfoFilter({

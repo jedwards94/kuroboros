@@ -1,5 +1,6 @@
 from typing import Generic, Type, TypeVar, get_args, get_origin
 import threading
+from datetime import timedelta
 from logging import Logger
 from kubernetes import client
 
@@ -8,7 +9,6 @@ from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.logger import root_logger, reconciler_logger
 from kuroboros.schema import BaseCRD
 from kuroboros.utils import event_aware_sleep, with_timeout
-from datetime import timedelta
 
 T = TypeVar("T", bound=BaseCRD)
 
@@ -39,7 +39,7 @@ class BaseReconciler(Generic[T]):
         if t_type is None or BaseCRD not in t_type.__mro__:
             raise RuntimeError(
                 "Could not determine generic type T. "
-                "Subclass BaseReconciler with a concrete type (e.g., `class MyReconciler(BaseReconciler[MyCRD]): ...`)"
+                "Subclass BaseReconciler with a concrete CRD type"
             )
 
         self._type = t_type
@@ -54,9 +54,12 @@ class BaseReconciler(Generic[T]):
 
     @property
     def crd_type(self) -> Type[T]:
+        """
+        Returns the CRD class
+        """
         return self._type
 
-    def reconcilation_loop(self, object: T, stop: threading.Event):
+    def reconcilation_loop(self, obj: T, stop: threading.Event):
         """
         Runs the reconciliation loop of every object
         while its a member of the `Controller`
@@ -67,8 +70,8 @@ class BaseReconciler(Generic[T]):
                 latest = self.__api.get_namespaced_custom_object(
                     group=self._group_version_info.group,
                     version=self._group_version_info.api_version,
-                    name=object.name,
-                    namespace=object.namespace,
+                    name=obj.name,
+                    namespace=obj.namespace,
                     plural=self._group_version_info.plural,
                 )
                 inst = self._type(
@@ -77,7 +80,9 @@ class BaseReconciler(Generic[T]):
                 inst.load_data(latest)
                 inst_logger, filt = reconciler_logger(self._group_version_info, inst)
                 if self.reconcile_timeout is None:
-                    interval = self.reconcile(logger=inst_logger, object=inst, stopped=stop)
+                    interval = self.reconcile(
+                        logger=inst_logger, obj=inst, stopped=stop
+                    )
                 else:
                     interval = with_timeout(
                         stop,
@@ -85,62 +90,74 @@ class BaseReconciler(Generic[T]):
                         self.reconcile_timeout.total_seconds(),
                         self.reconcile,
                         logger=inst_logger,
-                        object=inst,
-                        stopped=stop
+                        obj=inst,
+                        stopped=stop,
                     )
                 inst_logger.removeFilter(filt)
 
             except client.ApiException as e:
                 if e.status == 404:
-                    self._logger.info(f"{object} no longer found, killing thread")
+                    self._logger.info(e)
+                    self._logger.info("%s no longer found, killing thread", obj)
                 else:
                     self._logger.fatal(
-                        f"A `APIException` ocurred while proccessing {object}: {e}",
+                        "A `APIException` ocurred while proccessing %s: %s",
+                        obj,
+                        e,
                         exc_info=True,
                     )
             except UnrecoverableException as e:
                 self._logger.fatal(
-                    f"A `UnrecoverableException` ocurred while proccessing {object}: {e}",
+                    "A `UnrecoverableException` ocurred while proccessing %s: %s",
+                    obj,
+                    e,
                     exc_info=True,
                 )
             except RetriableException as e:
                 self._logger.warning(
-                    f"A `RetriableException` ocurred while proccessing {object}: {e}",
+                    "A `RetriableException` ocurred while proccessing %s: %s",
+                    obj,
+                    e,
                 )
                 interval = e.backoff
             except TimeoutError as e:
                 self._logger.warning(
-                    f"A `TimeoutError` ocurred while proccessing {object}: {e}",
+                    "A `TimeoutError` ocurred while proccessing %s: %s",
+                    obj,
+                    e,
                 )
                 if not self.timeout_retry:
                     self._logger.warning(
-                        f"`TimeoutError` will not be retried. To retry, enable `timeout_rety = True` in {self.__class__.__name__}",
+                        "`TimeoutError` will not be retried. To retry, enable it in %s",
+                        self.__class__.__name__,
                     )
                 else:
                     interval = self.timeout_requeue_time
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 self._logger.error(
-                    f"An `Exception` ocurred while proccessing {object}: {e}",
+                    "An `Exception` ocurred while proccessing %s: %s",
+                    obj,
+                    e,
                     exc_info=True,
                 )
-            finally:
-                if interval is not None:
-                    assert isinstance(interval, timedelta)
-                    event_aware_sleep(stop, interval.total_seconds())
-                else:
-                    break
-        self._logger.info(f"{object} reconcile loop stopped")
-        return
 
-    def reconcile(self, logger: Logger, object: T, stopped: threading.Event) -> None | timedelta:
+            if interval is not None:
+                assert isinstance(interval, timedelta)
+                event_aware_sleep(stop, interval.total_seconds())
+            else:
+                break
+        self._logger.info("%s reconcile loop stopped", obj)
+
+    def reconcile(
+        self, logger: Logger, obj: T, stopped: threading.Event #pylint: disable=unused-argument
+    ) -> None | timedelta:  # pylint: disable=unused-argument
         """
         The function that reconcile the object to the desired status.
-        Returns `None` or `timedelta`. A `timedelta` represent the interval for the next `reconcile` run,  `None` represent the end of the loop.
 
-        :param logger: The python logger with `name`, `namespace_name` and `resource_version` pre-loaded
+        :param logger: The python logger with `name`, `namespace` and `resource_version` pre-loaded
         :param object: The CRD instance at the run moment
         :param stopped: The reconciliation loop event that signal a stop
-        :returns interval (`timedelta`|`None`): The amount of time that the controller waits to run the `reconcile` function again.
+        :returns interval (`timedelta`|`None`): Reconcilation interval.
         If its `None` it will never run again until further updates or a controller restart
         """
-        pass
+        return None

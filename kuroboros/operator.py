@@ -1,5 +1,6 @@
 import multiprocessing
 import signal
+import sys
 import threading
 import time
 from typing import Dict, List, Tuple, cast
@@ -10,19 +11,24 @@ from prometheus_client import Gauge, start_http_server
 
 from kuroboros import logger
 from kuroboros.config import (
-    get_operator_name,
+    OPERATOR_NAME,
     OPERATOR_NAMESPACE,
     config as kuroboros_config,
 )
 from kuroboros.controller import Controller, ControllerConfig
 from kuroboros.group_version_info import GroupVersionInfo
-from kuroboros.reconciler import BaseReconciler 
+from kuroboros.reconciler import BaseReconciler
 from kuroboros.utils import event_aware_sleep
 from kuroboros.webhook import BaseWebhook
 from kuroboros.webhook_server import HTTPSWebhookServer
 
 
 class Operator:
+    """
+    The kuroboros Operator, it collect metrics, acquiere leadership,
+    start the webhook server and start the controllers reconcilation loops
+    """
+
     __METRICS_INTERVAL = float(
         kuroboros_config.getfloat(
             "operator", "metrics_update_interval_seconds", fallback=5.0
@@ -34,7 +40,9 @@ class Operator:
     __CERT_PATH = kuroboros_config.get(
         "operator", "cert_path", fallback="/etc/tls/tls.crt"
     )
-    __KEY_PATH = kuroboros_config.get("operator", "key_path", fallback="/etc/tls/tls.key")
+    __KEY_PATH = kuroboros_config.get(
+        "operator", "key_path", fallback="/etc/tls/tls.key"
+    )
     __WEBHOOK_PORT = int(
         kuroboros_config.getint("operator", "webhook_port", fallback=443)
     )
@@ -42,14 +50,15 @@ class Operator:
     _uid: str
     _logger = logger.root_logger.getChild(__name__)
     _is_leader: threading.Event
-    _threads_by_reconciler: Dict[BaseReconciler, Gauge]
+    _threads_by_reconciler: Gauge
+    _python_threads: Gauge
     _stop: threading.Event
     _threads: List[threading.Thread]
     _webhook_server_process: multiprocessing.Process | None
     _interrupted = False
 
     _namespace: str
-    name = get_operator_name()
+    name = OPERATOR_NAME
 
     _controllers: List[Controller]
     _controller_threads: Dict[Controller, Tuple[threading.Thread, threading.Thread]] = (
@@ -57,7 +66,14 @@ class Operator:
     )
 
     def __init__(self) -> None:
-        self._threads_by_reconciler = {}
+        self._threads_by_reconciler = Gauge(
+            "kuroboros_python_threads_by_reconciler",
+            "The number of threads running by the CRD controller",
+            labelnames=["namespace", "reconciler"],
+        )
+        self._python_threads = Gauge(
+            "python_active_threads", "The number of active python threads"
+        )
         self._controllers = []
         self._threads = []
         self._webhook_server_process = None
@@ -69,26 +85,40 @@ class Operator:
         self._stop = threading.Event()
         try:
             config.load_kube_config()
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             config.load_incluster_config()
-        pass
 
     def is_leader(self) -> bool:
+        """
+        Check if the leader event is set
+        """
         return self._is_leader.is_set()
 
     def is_running(self) -> bool:
+        """
+        Checks that the operator is running
+        """
         return self._running
 
     @property
     def namespace(self) -> str:
+        """
+        Get the opeartor namespace (if any)
+        """
         return self._namespace
 
     @property
     def uid(self) -> str:
+        """
+        Get the random UID generated for the Opeartor
+        """
         return self._uid
 
     @property
     def controllers(self) -> List[Controller]:
+        """
+        Get a copy of the Controllers in tyhe Operator
+        """
         return self._controllers.copy()
 
     def _add_controller(
@@ -110,12 +140,6 @@ class Operator:
         )
         if controller.name in [ctrl.name for ctrl in self._controllers]:
             raise RuntimeError("cannot add an already added controller")
-
-        self._threads_by_reconciler[controller.reconciler] = Gauge(
-            "kuroboros_python_threads_by_reconciler",
-            "The number of threads running by the CRD controller",
-            labelnames=["namespace", "reconciler"],
-        )
 
         self._controllers.append(controller)
 
@@ -152,7 +176,7 @@ class Operator:
                         f"error while trying to acquire leadership lease: {e}",
                         exc_info=True,
                     )
-                    raise RuntimeError("Error while acquiring leadership")
+                    raise RuntimeError("Error while acquiring leadership") from e
             lease_data: client.V1Lease = cast(client.V1Lease, lease)
             if lease_data.spec is None:
                 raise RuntimeError("Unexpected empty lease.spec")
@@ -181,19 +205,25 @@ class Operator:
             )
 
     def _metrics(self) -> None:
-        active_threads = Gauge("python_active_threads", "The number of active python threads")
+
         while not self._stop.is_set():
             for ctrl in self._controllers:
-                metric = self._threads_by_reconciler[ctrl.reconciler]
-                metric.labels(
+                self._threads_by_reconciler.labels(
                     OPERATOR_NAMESPACE, ctrl.reconciler.__class__.__name__
                 ).set(ctrl.threads)
-            active_threads.set(threading.active_count())
+            self._python_threads.set(threading.active_count())
             event_aware_sleep(self._stop, self.__METRICS_INTERVAL)
 
     def start(
-        self, controllers: List[ControllerConfig], skip_controllers: bool = False, skip_webhook_server: bool = False
+        self,
+        controllers: List[ControllerConfig],
+        skip_controllers: bool = False,
+        skip_webhook_server: bool = False,
     ) -> None:
+        """
+        Starts the opearator an the services after acquiring leadership of the CRs
+        """
+
         if skip_controllers and skip_webhook_server:
             raise RuntimeError(
                 "cannot start operator without running controllers or webhook server"
@@ -201,14 +231,17 @@ class Operator:
         if self._running:
             raise RuntimeError("cannot start an already started Operator")
 
-        if len(self._controllers) == 0:
+        if len(controllers) == 0:
             raise RuntimeError("no controllers found to run the operator")
-        
+
         # Add Controllers from controller configs
         for ctrl in controllers:
+            self._logger.info(f"adding {ctrl.name}")
             run_version = ctrl.get_run_version()
             if run_version.reconciler is None:
-                raise RuntimeError(f"reconciler `None` in {ctrl.name} {run_version.name}")
+                raise RuntimeError(
+                    f"reconciler `None` in {ctrl.name} {run_version.name}"
+                )
 
             try:
                 self._add_controller(
@@ -219,7 +252,7 @@ class Operator:
                     mutation_webhook=run_version.mutation_webhook,
                 )
 
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-except
                 self._logger.warning(e)
                 continue
 
@@ -231,7 +264,6 @@ class Operator:
                     webhooks.append(ctrl.validation_webhook)
                 if ctrl.mutation_webhook is not None:
                     webhooks.append(ctrl.mutation_webhook)
-                    
 
             if len(webhooks) > 0:
                 webhook_server = HTTPSWebhookServer(
@@ -245,8 +277,6 @@ class Operator:
                     name=f"{self.name}-webhook-server-process",
                 )
                 self._webhook_server_process.start()
-                
-
 
         # Start controllers
         if not skip_controllers:
@@ -269,33 +299,34 @@ class Operator:
                 ctrl_threads = ctrl.run()
                 self._controller_threads[ctrl] = ctrl_threads
 
-
         # start metrics maybe
         try:
             start_http_server(self.__METRICS_PORT)
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             self._logger.warning("metrics http server could not be started")
-            pass
+
         metrics_loop = threading.Thread(
             target=self._metrics, name=f"{self.name}-metrics", daemon=True
         )
         metrics_loop.start()
         self._threads.append(metrics_loop)
         self._running = True
-        
+
         # handle stop
         signal.signal(signal.SIGINT, self.signal_stop)
-        
+
         # handle crash
         while self._running:
             for thread in self._threads:
                 if not thread.is_alive():
                     self._logger.error(f"Thread {thread.name} died unexpectedly")
                     raise threading.ThreadError("Death thread")
-                
 
-            if self._webhook_server_process is not None and not self._webhook_server_process.is_alive():
-                self._logger.error(f"Webhook Server Process died unexpectedly")
+            if (
+                self._webhook_server_process is not None
+                and not self._webhook_server_process.is_alive()
+            ):
+                self._logger.error("Webhook Server Process died unexpectedly")
                 raise multiprocessing.ProcessError("Death process")
 
             if not skip_controllers:
@@ -307,27 +338,35 @@ class Operator:
                             )
                             raise threading.ThreadError("Death thread")
             event_aware_sleep(self._stop, 1)
-        
-        self._logger.info(f"good bye!")
-        
+
+        self._logger.info("good bye!")
 
     def signal_stop(self, sig, _):
+        """
+        Starts the shutdown process on a SIGINT, sending stop events to every component and
+        ppropagating the event to every thread
+        """
         self._logger.warning(f"{signal.Signals(sig).name} received")
-        if sig == 2: # SIGINT
+        if sig == 2:  # SIGINT
             if self._interrupted:
                 self._logger.warning("second SIGINT received, killing process")
-                exit(1)
+                sys.exit(1)
             self._interrupted = True
-            self._logger.warning("trying to gracefully shutdown...") 
+            self._logger.warning("trying to gracefully shutdown...")
             for ctrl in self._controllers:
                 ctrl.stop()
-                
+
             alive_threads = self._threads
-            self._logger.debug(f"waiting for {len(alive_threads)} threads in the operator to stop...")
+            self._logger.debug(
+                f"waiting for {len(alive_threads)} threads in the operator to stop..."
+            )
             self._stop.set()
             while len(alive_threads) > 0:
-                alive_threads = [thread for thread in self._threads if thread.is_alive() and isinstance(thread, threading.Thread)]
+                alive_threads = [
+                    thread
+                    for thread in self._threads
+                    if thread.is_alive() and isinstance(thread, threading.Thread)
+                ]
                 time.sleep(0.5)
 
         self._running = False
-        

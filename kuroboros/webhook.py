@@ -1,51 +1,74 @@
-from logging import Logger
 from typing import Generic, Type, TypeVar, get_args, get_origin
+import json
+import base64
 
 import falcon
-from kuroboros import logger
+import jsonpatch
+
+from kuroboros import logger as klogger
 from kuroboros.exceptions import MutationWebhookError, ValidationWebhookError
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.schema import BaseCRD
-import json
-import jsonpatch
-import base64
 
 T = TypeVar("T", bound=BaseCRD)
 
 
 class WebhookTypes:
+    """
+    The available webhook types
+    """
+
     VALIDATION = "Validation"
     MUTATION = "Mutation"
 
 
+class OperationsEnum:
+    """
+    Enum of kubernetes operations
+    """
+
+    CREATE = "CREATE"
+    UPDATE = "UPDATE"
+    DELETE = "DELETE"
+
+
 class BaseWebhook(Generic[T]):
+    """
+    The Base Webhook Class, all webhook should implement this
+    """
+
     name: str
+    logger = klogger.root_logger.getChild(__name__)
     _endpoint: str
-    _logger = logger.root_logger.getChild(__name__)
     _type: Type[T]
     _group_version_info: GroupVersionInfo
     _webhook_type: str
     _generic_base_type = None
     _endpoint_suffix: str
-    
+
     @property
     def crd_type(self) -> Type[T]:
+        """
+        Returns the type of CRD that this webhook handle
+        """
         return self._type
 
     @property
     def endpoint(self) -> str:
+        """
+        Returns the endpoint to this webhook.
+        Its formed by <apiVersion>/<singular>/<webhook_suffix>
+        """
         gvi = self._group_version_info
         return f"/{gvi.api_version}/{gvi.singular}/{self._endpoint_suffix}"
 
-    @property
-    def logger(self) -> Logger:
-        return self._logger
-
     def __init__(self, group_version_info: GroupVersionInfo) -> None:
         self._group_version_info = group_version_info
-        
-        self.name = f"{group_version_info.singular.capitalize()}{group_version_info.pretty_version_str()}{self._webhook_type}Webhook"
-        self._logger = self._logger.getChild(self.name)
+
+        pretty_version = group_version_info.pretty_version_str()
+        singular = group_version_info.singular.capitalize()
+        self.name = f"{singular}{pretty_version}{self._webhook_type}Webhook"
+        self.logger = self.logger.getChild(self.name)
         t_type = None
         for base in getattr(self.__class__, "__orig_bases__", []):
             origin = get_origin(base)
@@ -56,26 +79,35 @@ class BaseWebhook(Generic[T]):
         if t_type is None or BaseCRD not in t_type.__mro__:
             raise RuntimeError(
                 "Could not determine generic type T. "
-                f"Subclass Base{self._webhook_type}Webhook with a concrete type (e.g., `class My{self._webhook_type}Webhook(Base{self._webhook_type}Webhook[MyCRD]): ...`)"
+                f"Subclass Base{self._webhook_type}Webhook with a concrete CRD type"
             )
 
         self._type = t_type
 
     def process(self, body: bytes):
+        """
+        Processess the raw request
+        """
         raise NotImplementedError("Subclasses must implement the process method")
-    
-    
+
     def on_post(self, req: falcon.Request, resp: falcon.Response) -> None:
+        """
+        POST on `endpoint`
+        """
         raw = req.stream.read()
         response, status, headers = self.process(raw)
         resp.status = status
         resp.text = response
         for k, v in (headers or {}).items():
             resp.set_header(k, v)
-        self._logger.info(f"{req.method} {req.path} {status} {req.access_route}")
+        self.logger.info(f"{req.method} {req.path} {status} {req.access_route}")
 
 
 class BaseValidationWebhook(BaseWebhook, Generic[T]):
+    """
+    Kuroboros BaseValidationWebhook.
+    Registers an endpoint in /<apiVersion>/<singular>/validate
+    """
 
     def __init__(self, group_version_info: GroupVersionInfo) -> None:
         self._webhook_type = WebhookTypes.VALIDATION
@@ -84,22 +116,22 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
         super().__init__(group_version_info)
 
     def validate_create(self, data: T) -> None:
-        # Implement your validation logic here
-        # For now, we assume the data is always valid
-        pass
+        """
+        Define the create validation logic
+        """
 
     def validate_update(self, data: T, old_data: T) -> None:
-        # Implement your validation logic here
-        # For now, we assume the data is always valid
-        pass
-    
+        """
+        Define the update validation logic
+        """
+
     def validate_delete(self, old_data: T) -> None:
-        # Implement your validation logic here
-        # For now, we assume the data is always valid
-        pass
+        """
+        Define the delete validation logic
+        """
 
     def process(self, body: bytes):
-        self._logger.debug("processing validation webhook")
+        self.logger.debug("processing validation webhook")
         request = None
         try:
             admission_review = json.loads(body.decode("utf-8"))
@@ -120,12 +152,12 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
                 else None
             )
 
-            if operation == "CREATE":
+            if operation == OperationsEnum.CREATE:
                 assert (
                     crd_instance is not None
                 ), "CRD instance cannot be None for create operation"
                 self.validate_create(crd_instance)
-            elif operation == "UPDATE":
+            elif operation == OperationsEnum.UPDATE:
                 assert (
                     crd_instance is not None
                 ), "CRD instance cannot be None for update operation"
@@ -133,7 +165,7 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
                     old_crd_instance is not None
                 ), "old CRD instance cannot be None for update operation"
                 self.validate_update(crd_instance, old_crd_instance)
-            elif operation == "DELETE":
+            elif operation == OperationsEnum.DELETE:
                 assert (
                     crd_instance is None
                 ), "CRD instance must be None for delete operation"
@@ -144,7 +176,7 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
             else:
                 raise ValidationWebhookError(f"unsupported operation: {operation}")
 
-            self._logger.debug("validation passed")
+            self.logger.debug("validation passed")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
@@ -156,7 +188,7 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
                 {"Content-Type": "application/json"},
             )
         except ValidationWebhookError as e:
-            self._logger.warning(f"validation failed: {e.reason}")
+            self.logger.warning(f"validation failed: {e.reason}")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
@@ -172,7 +204,7 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
                 {"Content-Type": "application/json"},
             )
         except AssertionError as e:
-            self._logger.warning(f"validation failed: {e}")
+            self.logger.warning(f"validation failed: {e}")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
@@ -193,8 +225,8 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
                 falcon.HTTP_400,
                 {"Content-Type": "application/json"},
             )
-        except Exception as e:
-            self._logger.error(f"failed to decode webhook body: {e}")
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error(f"failed to decode webhook body: {e}")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
@@ -211,11 +243,11 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
             )
 
 
-
-
-
 class BaseMutationWebhook(BaseWebhook, Generic[T]):
-
+    """
+    Kuroboros BaseMutationWebhook.
+    Registers an endpoint in /<apiVersion>/<singular>/mutate
+    """
     def __init__(self, group_version_info: GroupVersionInfo) -> None:
         self._webhook_type = WebhookTypes.MUTATION
         self._generic_base_type = BaseMutationWebhook
@@ -223,11 +255,13 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
         super().__init__(group_version_info)
 
     def mutate(self, data: T) -> T:
-        # Override this in subclasses to implement mutation logic
+        """
+        Define the mutation logic
+        """
         return data
 
     def process(self, body: bytes):
-        self._logger.debug("processing mutation webhook")
+        self.logger.debug("processing mutation webhook")
         request = None
         try:
             admission_review = json.loads(body.decode("utf-8"))
@@ -237,32 +271,33 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
 
             # Convert obj to CRD instance if needed
             crd_instance = (
-                self._type(api=None, group_version=None, data=obj)
-                if obj
-                else None
+                self._type(api=None, group_version=None, data=obj) if obj else None
             )
             mutate_instance = (
-                self._type(api=None, group_version=None, data=obj)
-                if obj
-                else None
+                self._type(api=None, group_version=None, data=obj) if obj else None
             )
 
-            if operation not in ("CREATE", "UPDATE"):
+            if operation not in (OperationsEnum.CREATE, OperationsEnum.DELETE):
                 raise MutationWebhookError(f"unsupported operation: {operation}")
 
             assert crd_instance is not None, "CRD instance cannot be None for mutation"
-            assert mutate_instance is not None, "CRD instance cannot be None for mutation"
-
+            assert (
+                mutate_instance is not None
+            ), "CRD instance cannot be None for mutation"
 
             mutated_crd = self.mutate(mutate_instance)
             assert mutated_crd is not None, "Mutated CRD instance cannot be None"
-            patch_ops = jsonpatch.JsonPatch.from_diff(crd_instance.get_data(), mutated_crd.get_data()).patch
+            patch_ops = jsonpatch.JsonPatch.from_diff(
+                crd_instance.get_data(), mutated_crd.get_data()
+            ).patch
             self.logger.debug(f"crd_instance: {crd_instance.get_data()}")
             self.logger.debug(f"mutated_crd: {mutated_crd.get_data()}")
             self.logger.debug(f"patch operations: {patch_ops}")
-            patch_b64 = base64.b64encode(json.dumps(patch_ops).encode("utf-8")).decode("utf-8")
+            patch_b64 = base64.b64encode(json.dumps(patch_ops).encode("utf-8")).decode(
+                "utf-8"
+            )
 
-            self._logger.debug("mutation passed")
+            self.logger.debug("mutation passed")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
@@ -270,9 +305,7 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
                     "uid": request.get("uid"),
                     "allowed": True,
                     "patchType": "JSONPatch",
-                    "patch": (
-                        patch_b64
-                    ),
+                    "patch": (patch_b64),
                 },
             }
             return (
@@ -281,7 +314,7 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
                 {"Content-Type": "application/json"},
             )
         except MutationWebhookError as e:
-            self._logger.warning(f"mutation failed: {e.reason}")
+            self.logger.warning(f"mutation failed: {e.reason}")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
@@ -297,7 +330,7 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
                 {"Content-Type": "application/json"},
             )
         except AssertionError as e:
-            self._logger.warning(f"mutation failed: {e}")
+            self.logger.warning(f"mutation failed: {e}")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
@@ -318,8 +351,8 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
                 falcon.HTTP_400,
                 {"Content-Type": "application/json"},
             )
-        except Exception as e:
-            self._logger.error(f"failed to decode mutation webhook body: {e}")
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error(f"failed to decode mutation webhook body: {e}")
             response = {
                 "apiVersion": "admission.k8s.io/v1",
                 "kind": "AdmissionReview",
