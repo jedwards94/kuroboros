@@ -1,6 +1,5 @@
-from typing import List
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from kuroboros.operator import Operator
 from kuroboros.controller import Controller, ControllerConfig, ControllerConfigVersions
 from kuroboros.group_version_info import GroupVersionInfo
@@ -109,8 +108,6 @@ class TestOperator(unittest.TestCase):
             operator._add_controller('test', group_version, reconciler)
             metric = mock_gauge.return_value
             # Patch the class-level private dict
-            threads_by_reconciler = operator._threads_by_reconciler
-            threads_by_reconciler[operator.controllers[0].reconciler] = metric
             with patch('time.sleep', side_effect=Exception('break')):
                 try:
                     operator._metrics()

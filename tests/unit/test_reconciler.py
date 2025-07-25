@@ -1,3 +1,4 @@
+# pylint: skip-file
 from datetime import timedelta
 from logging import Logger
 from threading import Event, Thread
@@ -46,38 +47,40 @@ class LoopTest(BaseReconciler[TestCrd]):
     infinite = False
     retriable_exception = False
     unrecoverable_exception = False
-    def reconcile(self, logger: Logger, object: TestCrd, stopped: threading.Event):
+
+    def reconcile(self, logger: Logger, obj: TestCrd, stopped: threading.Event):
         self.reconcile_call_count = self.reconcile_call_count + 1
         self.loops = self.loops + 1
         if self.loops == self.max_loops and self.infinite is False:
             return
-        
+
         if self.retriable_exception:
             raise RetriableException(timedelta(seconds=2), Exception("testing"))
-        
+
         if self.unrecoverable_exception:
             raise UnrecoverableException(Exception("testing"))
         return timedelta(seconds=2)
 
 
 class TestLoop(unittest.TestCase):
-    
-    
+
     @patch("kubernetes.client.CustomObjectsApi.get_namespaced_custom_object")
     def test_object_exists(self, mock_get: MagicMock):
         reconciler = LoopTest(test_api_group)
         reconciler.api = client.CustomObjectsApi()
         test_obj = TestCrd()
-        test_obj.load_data({
-            "metadata": {
-                "resourceVersion": "1234",
-                "namespace": "test",
-                "name": "test",
-                "uid": "1",
+        test_obj.load_data(
+            {
+                "metadata": {
+                    "resourceVersion": "1234",
+                    "namespace": "test",
+                    "name": "test",
+                    "uid": "1",
+                }
             }
-        })
+        )
         ev = Event()
-        
+
         mock_get.return_value = {
             "metadata": {
                 "resourceVersion": "1234",
@@ -89,47 +92,47 @@ class TestLoop(unittest.TestCase):
         reconciler.reconcilation_loop(test_obj, ev)
         self.assertEqual(reconciler.reconcile_call_count, 2)
         self.assertEqual(mock_get.call_count, 2)
-        
-        
-        
-        
-        
+
     @patch("kubernetes.client.CustomObjectsApi.get_namespaced_custom_object")
-    def test_object_does_not_exists(self, mock_get:MagicMock):
-        
+    def test_object_does_not_exists(self, mock_get: MagicMock):
+
         reconciler = LoopTest(test_api_group)
         reconciler.api = client.CustomObjectsApi()
         test_obj = TestCrd()
-        test_obj.load_data({
-            "metadata": {
-                "resourceVersion": "1234",
-                "namespace": "test",
-                "name": "test",
-                "uid": "1",
+        test_obj.load_data(
+            {
+                "metadata": {
+                    "resourceVersion": "1234",
+                    "namespace": "test",
+                    "name": "test",
+                    "uid": "1",
+                }
             }
-        })
+        )
         ev = Event()
         mock_get.side_effect = client.ApiException(status=404, reason="Not Found")
         reconciler.reconcilation_loop(test_obj, ev)
         mock_get.assert_called_once()
         self.assertEqual(reconciler.reconcile_call_count, 0)
-        
+
     @patch("kubernetes.client.CustomObjectsApi.get_namespaced_custom_object")
     def test_stop_loop_on_event(self, mock_get: MagicMock):
         reconciler = LoopTest(test_api_group)
         reconciler.infinite = True
         reconciler.api = client.CustomObjectsApi()
         test_obj = TestCrd()
-        test_obj.load_data({
-            "metadata": {
-                "resourceVersion": "1234",
-                "namespace": "test",
-                "name": "test",
-                "uid": "1",
+        test_obj.load_data(
+            {
+                "metadata": {
+                    "resourceVersion": "1234",
+                    "namespace": "test",
+                    "name": "test",
+                    "uid": "1",
+                }
             }
-        })
+        )
         ev = Event()
-        
+
         mock_get.return_value = {
             "metadata": {
                 "resourceVersion": "1234",
@@ -138,29 +141,33 @@ class TestLoop(unittest.TestCase):
                 "uid": "1",
             }
         }
-        reconcile_thread = Thread(target=reconciler.reconcilation_loop, args=(test_obj, ev))
+        reconcile_thread = Thread(
+            target=reconciler.reconcilation_loop, args=(test_obj, ev)
+        )
         reconcile_thread.start()
         ev.set()
         sleep(0.2)
         self.assertEqual(ev.is_set(), True)
         self.assertEqual(reconcile_thread.is_alive(), False)
-        
+
     @patch("kubernetes.client.CustomObjectsApi.get_namespaced_custom_object")
     def test_retriable_exception(self, mock_get: MagicMock):
         reconciler = LoopTest(test_api_group)
         reconciler.retriable_exception = True
         reconciler.api = client.CustomObjectsApi()
         test_obj = TestCrd()
-        test_obj.load_data({
-            "metadata": {
-                "resourceVersion": "1234",
-                "namespace": "test",
-                "name": "test",
-                "uid": "1",
+        test_obj.load_data(
+            {
+                "metadata": {
+                    "resourceVersion": "1234",
+                    "namespace": "test",
+                    "name": "test",
+                    "uid": "1",
+                }
             }
-        })
+        )
         ev = Event()
-        
+
         mock_get.return_value = {
             "metadata": {
                 "resourceVersion": "1234",
@@ -178,16 +185,18 @@ class TestLoop(unittest.TestCase):
         reconciler.unrecoverable_exception = True
         reconciler.api = client.CustomObjectsApi()
         test_obj = TestCrd()
-        test_obj.load_data({
-            "metadata": {
-                "resourceVersion": "1234",
-                "namespace": "test",
-                "name": "test",
-                "uid": "1",
+        test_obj.load_data(
+            {
+                "metadata": {
+                    "resourceVersion": "1234",
+                    "namespace": "test",
+                    "name": "test",
+                    "uid": "1",
+                }
             }
-        })
+        )
         ev = Event()
-        
+
         mock_get.return_value = {
             "metadata": {
                 "resourceVersion": "1234",

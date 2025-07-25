@@ -1,4 +1,4 @@
-from sys import api_version
+# pylint: skip-file
 from typing import cast
 import unittest
 from unittest.mock import MagicMock, patch
