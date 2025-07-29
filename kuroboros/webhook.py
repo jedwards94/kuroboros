@@ -277,7 +277,7 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
                 self._type(api=None, group_version=None, data=obj) if obj else None
             )
 
-            if operation not in (OperationsEnum.CREATE, OperationsEnum.DELETE):
+            if operation not in (OperationsEnum.CREATE, OperationsEnum.UPDATE):
                 raise MutationWebhookError(f"unsupported operation: {operation}")
 
             assert crd_instance is not None, "CRD instance cannot be None for mutation"

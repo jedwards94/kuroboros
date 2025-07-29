@@ -35,7 +35,6 @@ from kuroboros.config import config
 from kuroboros.operator import Operator
 
 
-
 VERSION_NUM = pyver("kuroboros")
 
 
@@ -45,10 +44,11 @@ CRD_OUT = "crd"
 RBAC_OUT = "rbac"
 WEBHOOKS_OUT = "webhooks"
 DEPLOYMENT_OUT = "deployment"
+CONTROLLERS_PATH = "controllers"
 
 sys.path.insert(0, str(Path().absolute()))
 
-controllers = load_controller_configs("controllers")
+controllers = load_controller_configs(CONTROLLERS_PATH)
 
 
 @click.group(help=f"Kuroboros Framework {VERSION_NUM}")
@@ -81,7 +81,7 @@ def version_cli():
 
 @cli.group(help="Generate the kubernetes resources manifests to deploy the operator")
 @click.pass_context
-def generate(ctx: click.Context): #pylint: disable=unused-argument
+def generate(ctx: click.Context):  # pylint: disable=unused-argument
     """
     Generate the kubernetes resources manifests to deploy the operator
     """
@@ -274,25 +274,29 @@ def controller(kind: str, api_version: str, group: str):
     Creates a Controller with a base version, a reconciler and its CRD
     """
     click.echo(f"🐍 Creating {kind} Controller")
-    rec = new_reconciler(kind)
+    python_module = f"{CONTROLLERS_PATH}.{kind.lower()}.{api_version}"
+    rec = new_reconciler(kind, python_module)
     crd_data = new_crd(kind)
     group_versions = new_group_versions(api_version, group, kind)
 
-    click.echo("controllers/")
+    click.echo(f"{CONTROLLERS_PATH}/")
     create_file(
-        f"controllers/{kind.lower()}",
+        f"{CONTROLLERS_PATH}/{kind.lower()}",
         "group_version.py",
         group_versions,
         overwrite=False,
     )
     create_file(
-        f"controllers/{kind.lower()}/{api_version}",
+        f"{CONTROLLERS_PATH}/{kind.lower()}/{api_version}",
         "reconciler.py",
         rec,
         overwrite=False,
     )
     create_file(
-        f"controllers/{kind.lower()}/{api_version}", "crd.py", crd_data, overwrite=False
+        f"{CONTROLLERS_PATH}/{kind.lower()}/{api_version}",
+        "crd.py",
+        crd_data,
+        overwrite=False,
     )
 
 
@@ -313,7 +317,7 @@ def operator(name):
 
 @cli.command(help="Applies the given overlay to the current context")
 @click.argument("overlay", type=str)
-def deploy(overlay): # pylint: disable=redefined-outer-name
+def deploy(overlay):  # pylint: disable=redefined-outer-name
     """
     Applies the given overlay to the current context
     """
@@ -348,7 +352,9 @@ def build(build_arg):
             k, v = arg.split("=", 1)
             build_args[k] = v
         else:
-            raise click.BadParameter(f"Invalid build-arg format: '{arg}', expected key=val")
+            raise click.BadParameter(
+                f"Invalid build-arg format: '{arg}', expected key=val"
+            )
     click.echo(f"🌀 Building Kuroboros Operator image with tag {img}")
     docker_build(img, args=build_args)
     click.echo("🌀 Done building Kuroboros Operator image")
@@ -384,4 +390,4 @@ def start(skip_controllers, skip_webhook_server):
 
 
 if __name__ == "__main__":
-    cli(auto_envvar_prefix="KUROBOROS") # pylint: disable=no-value-for-parameter
+    cli(auto_envvar_prefix="KUROBOROS")  # pylint: disable=no-value-for-parameter

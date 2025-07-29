@@ -1,17 +1,17 @@
 from kuroboros.schema import BaseCRD, prop
 
+class {{ kind }}Status(BaseCRDProp):
+    """
+    TODO: Define {{ kind }} status properties
+    """
+
 class {{ kind }}(BaseCRD):
+    status = prop({{ kind }}Status)
     """ 
-    TODO: Add your specs here!
+    TODO: Add {{ kind }} specs here!
     remember to use something like
     
     image_tag = prop(str, default="redis")
-
-    You can ovewrite the `status` object with something like
-
-    status=prop(dict, properties={
-        "current_size": prop(int, required=True, default=0)
-    })
     """
-    pass
+
 

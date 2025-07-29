@@ -66,6 +66,7 @@ class Operator:
     )
 
     def __init__(self) -> None:
+        
         self._threads_by_reconciler = Gauge(
             "kuroboros_python_threads_by_reconciler",
             "The number of threads running by the CRD controller",
@@ -169,7 +170,6 @@ class Operator:
                     if not self.is_leader():
                         self._logger.info(f"leadership acquired under uid {self._uid}")
                         self._is_leader.set()
-                    continue
 
                 else:
                     self._logger.error(

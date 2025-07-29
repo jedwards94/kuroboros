@@ -1,10 +1,12 @@
-from kuroboros.reconciler import BaseReconciler
-from .crd import {{ kind }}
 import threading
+from datetime import timedelta
+
+from kuroboros.reconciler import BaseReconciler
+from {{ module }}.crd import {{ kind }}
 
 class {{ kind }}Reconciler(BaseReconciler[{{ kind }}]):
-    
-    def reconcile(self, logger, object: {{ kind }}, stopped: threading.Event):
+
+    def reconcile(self, logger, obj: {{ kind }}, stopped: threading.Event) -> None | timedelta:
         """
         TODO: Implement your reconcilation logic here
         """

@@ -143,14 +143,14 @@ def prop(
                 return cast(
                     T,
                     CRDProp(
-                        type=t,
+                        typ=t,
                         required=required,
                         properties=properties,
                         subtype=subtype,
                         **kwargs,
                     ),
                 )
-    p = CRDProp(type=t, required=required, properties=properties, **kwargs)
+    p = CRDProp(typ=t, required=required, properties=properties, **kwargs)
     p.real_type = typ
     return cast(T, p)
 

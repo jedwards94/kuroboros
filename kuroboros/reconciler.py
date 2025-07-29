@@ -155,7 +155,7 @@ class BaseReconciler(Generic[T]):
         The function that reconcile the object to the desired status.
 
         :param logger: The python logger with `name`, `namespace` and `resource_version` pre-loaded
-        :param object: The CRD instance at the run moment
+        :param obj: The CRD instance at the run moment
         :param stopped: The reconciliation loop event that signal a stop
         :returns interval (`timedelta`|`None`): Reconcilation interval.
         If its `None` it will never run again until further updates or a controller restart

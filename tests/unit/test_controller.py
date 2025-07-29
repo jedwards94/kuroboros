@@ -8,16 +8,16 @@ from kuroboros.webhook import BaseValidationWebhook
 from kuroboros.schema import BaseCRD
 from kubernetes import client
 
+
 def group_version_info():
     return GroupVersionInfo(
-        group="testgroup",
-        api_version="v1",
-        plural="dummies",
-        kind="Dummy"
+        group="testgroup", api_version="v1", plural="dummies", kind="Dummy"
     )
+
 
 class FailDummyCRD(BaseCRD):
     pass
+
 
 class DummyCRD(BaseCRD):
     @property
@@ -32,22 +32,28 @@ class DummyCRD(BaseCRD):
         self._namespace_name = ("default", "dummy")
         self._finalizers = []
         self._data = {}
+
     def load_data(self, data):
         self._data = data
-        self._namespace_name = (data.get("metadata", {}).get("namespace", "default"),
-                               data.get("metadata", {}).get("name", "dummy"))
+        self._namespace_name = (
+            data.get("metadata", {}).get("namespace", "default"),
+            data.get("metadata", {}).get("name", "dummy"),
+        )
         self._finalizers = data.get("metadata", {}).get("finalizers", [])
+
 
 class DummyReconciler(BaseReconciler[DummyCRD]):
     def __init__(self):
         self.api = None
         super().__init__(group_version_info())
+
     def _reconcile(self, object, stop):
         time.sleep(2)
-        pass
+
 
 class DummyWebhookValidation(BaseValidationWebhook[DummyCRD]):
     pass
+
 
 class FailDummyWebhookValidation(BaseValidationWebhook[FailDummyCRD]):
     pass
@@ -60,8 +66,10 @@ def reconciler():
 def webhook():
     return DummyWebhookValidation(group_version_info())
 
+
 def fail_webhook():
     return FailDummyWebhookValidation(group_version_info())
+
 
 def make_controller():
     with patch("kuroboros.controller.Controller._check_permissions"):
@@ -75,21 +83,26 @@ class TestController(unittest.TestCase):
     def test_controller_init_sets_attributes(self):
         self.assertEqual(self.controller.name, "DummycontrollerV1StableController")
         self.assertIsInstance(self.controller.reconciler, DummyReconciler)
-        
+
     def test_controller_webhook_reconciler_equals_crd_cls(self):
         with patch("kuroboros.controller.Controller._check_permissions"):
-            ctrl = Controller("DummyController", group_version_info(), reconciler(), webhook())
+            ctrl = Controller(
+                "DummyController", group_version_info(), reconciler(), webhook()
+            )
             self.assertIsInstance(ctrl, Controller)
-            
+
             with self.assertRaises(RuntimeError):
-                Controller("DummyController", group_version_info(), reconciler(), fail_webhook())
-            
-        
+                Controller(
+                    "DummyController",
+                    group_version_info(),
+                    reconciler(),
+                    fail_webhook(),
+                )
 
     def test_add_member_adds_thread(self):
         crd = DummyCRD()
         with patch("kuroboros.controller.client.CustomObjectsApi"):
-            self.controller._add_member(crd)  
+            self.controller._add_member(crd)
         self.assertIn(crd.namespace_name, self.controller._members)
         thread, event = self.controller._members[crd.namespace_name]
         self.assertTrue(thread.is_alive())
@@ -131,7 +144,14 @@ class TestController(unittest.TestCase):
     def test_stream_events_returns_iterator(self):
         api = MagicMock()
         watcher = MagicMock()
-        watcher.stream.return_value = iter([{"type": EventEnum.ADDED, "object": {"metadata": {"name": "foo", "namespace": "bar"}}}])
+        watcher.stream.return_value = iter(
+            [
+                {
+                    "type": EventEnum.ADDED,
+                    "object": {"metadata": {"name": "foo", "namespace": "bar"}},
+                }
+            ]
+        )
         result = self.controller._stream_events(api, watcher)
         self.assertTrue(isinstance(result, dict) or hasattr(result, "__iter__"))
 
@@ -140,10 +160,12 @@ class TestController(unittest.TestCase):
         api_mock.list_cluster_custom_object.return_value = {
             "items": [
                 {"metadata": {"name": "foo", "namespace": "bar"}},
-                {"metadata": {"name": "baz", "namespace": "qux"}}
+                {"metadata": {"name": "baz", "namespace": "qux"}},
             ]
         }
-        with patch("kuroboros.controller.client.CustomObjectsApi", return_value=api_mock):
+        with patch(
+            "kuroboros.controller.client.CustomObjectsApi", return_value=api_mock
+        ):
             with patch.object(self.controller, "_add_member") as add_member:
                 self.controller._preload_existing_cr()
                 self.assertEqual(add_member.call_count, 2)
@@ -152,17 +174,36 @@ class TestController(unittest.TestCase):
         api = MagicMock()
         watcher = MagicMock()
         events = [
-            {"type": EventEnum.ADDED, "object": {"metadata": {"name": "foo", "namespace": "bar"}}},
-            {"type": EventEnum.MODIFIED, "object": {"metadata": {"name": "foo", "namespace": "bar"}}},
-            {"type": EventEnum.DELETED, "object": {"metadata": {"name": "foo", "namespace": "bar"}, "finalizers": []}},
-            {"type": "UNKNOWN", "object": {"metadata": {"name": "foo", "namespace": "bar"}}},
-            "notadict"
+            {
+                "type": EventEnum.ADDED,
+                "object": {"metadata": {"name": "foo", "namespace": "bar"}},
+            },
+            {
+                "type": EventEnum.MODIFIED,
+                "object": {"metadata": {"name": "foo", "namespace": "bar"}},
+            },
+            {
+                "type": EventEnum.DELETED,
+                "object": {
+                    "metadata": {"name": "foo", "namespace": "bar"},
+                    "finalizers": [],
+                },
+            },
+            {
+                "type": "UNKNOWN",
+                "object": {"metadata": {"name": "foo", "namespace": "bar"}},
+            },
+            "notadict",
         ]
         watcher.stream.return_value = iter(events)
         with patch("kuroboros.controller.client.CustomObjectsApi", return_value=api):
-            with patch.object(self.controller, "_add_member") as add_member, \
-                 patch.object(self.controller, "_remove_member") as remove_member, \
-                 patch.object(self.controller, "_add_pending_remove") as add_pending_remove:
+            with patch.object(
+                self.controller, "_add_member"
+            ) as add_member, patch.object(
+                self.controller, "_remove_member"
+            ) as remove_member, patch.object(
+                self.controller, "_add_pending_remove"
+            ) as add_pending_remove:
                 self.controller._stream_events = MagicMock(return_value=events)
                 self.controller._watch_cr_events()
                 self.assertEqual(add_member.call_count, 2)
@@ -170,11 +211,14 @@ class TestController(unittest.TestCase):
 
     def test_watch_pending_remove_removes_when_404(self):
         api = MagicMock()
-        api.get_namespaced_custom_object_with_http_info.side_effect = client.ApiException(status=404, reason="Not Found")
+        api.get_namespaced_custom_object_with_http_info.side_effect = (
+            client.ApiException(status=404, reason="Not Found")
+        )
         self.controller._pending_remove = [("default", "dummy")]
         with patch("kuroboros.controller.client.CustomObjectsApi", return_value=api):
-            with patch.object(self.controller, "_remove_member") as remove_member, \
-                 patch("time.sleep", side_effect=Exception("break")):
+            with patch.object(
+                self.controller, "_remove_member"
+            ) as remove_member, patch("time.sleep", side_effect=Exception("break")):
                 try:
                     self.controller._watch_pending_remove()
                 except Exception:
@@ -185,7 +229,9 @@ class TestController(unittest.TestCase):
         with patch("kuroboros.controller.client.AuthorizationV1Api") as mock_api:
             mock_instance = mock_api.return_value
             # Simulate allowed for all verbs
-            mock_instance.create_self_subject_access_review.return_value.status = MagicMock(allowed=True, denied=False)
+            mock_instance.create_self_subject_access_review.return_value.status = (
+                MagicMock(allowed=True, denied=False)
+            )
             ctrl = Controller("DummyController", group_version_info(), reconciler())
             # Should not raise
             ctrl._check_permissions()
@@ -193,14 +239,18 @@ class TestController(unittest.TestCase):
     def test_check_permissions_denied(self):
         with patch("kuroboros.controller.client.AuthorizationV1Api") as mock_api:
             mock_instance = mock_api.return_value
+
             # Simulate denied for one verb
             def denied_review(*args, **kwargs):
                 class Status:
                     allowed = False
                     denied = True
+
                 class Review:
                     status = Status()
+
                 return Review()
+
             mock_instance.create_self_subject_access_review.side_effect = denied_review
             with self.assertRaises(RuntimeWarning):
                 Controller("DummyController", group_version_info(), reconciler())

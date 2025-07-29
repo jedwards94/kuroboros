@@ -25,7 +25,7 @@ dependencies = [
 kuroboros = "kuroboros.cli.main:cli"
 
 [tool.setuptools.packages.find]
-include = ["kuroboros*", "cli"]
+include = ["kuroboros*"]
 
 [tool.setuptools.package-data]
 "kuroboros" = ["cli/templates/*", "cli/templates/**/*"]

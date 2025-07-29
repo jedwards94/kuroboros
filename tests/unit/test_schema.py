@@ -134,7 +134,7 @@ class TestInit(unittest.TestCase):
                 "test_sub_field"
             ],
         )
-        
+
         inst_1.nested_test_field.test_sub_field.test_sub_field = "test"
         inst_2.nested_test_field.test_sub_field.test_sub_field = "test"
         self.assertEquals(
@@ -145,8 +145,6 @@ class TestInit(unittest.TestCase):
                 "test_sub_field"
             ],
         )
-        
-        
 
 
 class TestInstance(unittest.TestCase):

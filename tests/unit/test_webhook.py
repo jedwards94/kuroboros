@@ -102,7 +102,12 @@ class TestValidationWebhook(unittest.TestCase):
         admission_review = {
             "apiVersion": "admission.k8s.io/v1",
             "kind": "AdmissionReview",
-            "request": {"uid": "123", "operation": "DELETE", "object": None, "oldObject": { "fail": False }},
+            "request": {
+                "uid": "123",
+                "operation": "DELETE",
+                "object": None,
+                "oldObject": {"fail": False},
+            },
         }
         body = json.dumps(admission_review).encode("utf-8")
         resp, status, headers = self.webhook.process(body)

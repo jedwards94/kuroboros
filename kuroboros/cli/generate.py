@@ -86,7 +86,8 @@ def rbac_sa() -> str:
 def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
     """
     Generates the operator `Role`.
-    Loads custom `Policies` to use in the `Role` from all the sections that start with `generate.rbac.policies.`
+    Loads custom `Policies` to use in the `Role` from all 
+    the sections that start with `generate.rbac.policies.`
     """
     config_policies = [
         config[k] for k in config.sections() if k.startswith("generate.rbac.policies.")
