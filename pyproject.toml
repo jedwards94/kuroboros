@@ -19,6 +19,7 @@ dependencies = [
     "falcon==4.0.2",
     "gunicorn==23.0.0",
     "jsonpatch==1.33",
+    "case-converter==1.2.0"
 ]
 
 [project.scripts]

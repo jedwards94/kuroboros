@@ -36,9 +36,9 @@ class TestInit(unittest.TestCase):
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
             "spec": {
-                "test_field": {"test_sub_field": "testing string"},
-                "nested_test_field": {
-                    "test_sub_field": {"test_sub_field": "testing string"}
+                "testField": {"testSubField": "testing string"},
+                "nestedTestField": {
+                    "testSubField": {"testSubField": "testing string"}
                 },
             },
             "status": {"some": "thing"},
@@ -81,7 +81,7 @@ class TestInit(unittest.TestCase):
         inst = TestCrd()
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {"test_field": "testing string"},
+            "spec": {"testField": "testing string"},
             "status": {"some": "thing"},
         }
 
@@ -95,7 +95,7 @@ class TestInit(unittest.TestCase):
         self.assertIsNone(inst.not_in_data)
 
     def test_load_data_by_value(self):
-        data_1 = {"metadata": {"name": "test"}, "spec": {"test_field": "test"}}
+        data_1 = {"metadata": {"name": "test"}, "spec": {"testField": "test"}}
         inst_1 = TestCrd(data=data_1)
         inst_2 = TestCrd(data=data_1)
 
@@ -107,9 +107,9 @@ class TestInit(unittest.TestCase):
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
             "spec": {
-                "test_field": {"test_sub_field": "testing string"},
-                "nested_test_field": {
-                    "test_sub_field": {"test_sub_field": "testing string"}
+                "testField": {"testSubField": "testing string"},
+                "nestedTestField": {
+                    "testSubField": {"testSubField": "testing string"}
                 },
             },
             "status": {"some": "thing"},
@@ -120,29 +120,29 @@ class TestInit(unittest.TestCase):
         inst_1.test_field.test_sub_field = "test2"
         inst_2.test_field.test_sub_field = "test3"
         self.assertNotEqual(
-            inst_1.get_data()["spec"]["test_field"]["test_sub_field"],
-            inst_2.get_data()["spec"]["test_field"]["test_sub_field"],
+            inst_1.get_data()["spec"]["testField"]["testSubField"],
+            inst_2.get_data()["spec"]["testField"]["testSubField"],
         )
 
         inst_1.nested_test_field.test_sub_field.test_sub_field = "test4"
         inst_2.nested_test_field.test_sub_field.test_sub_field = "test5"
         self.assertNotEqual(
-            inst_1.get_data()["spec"]["nested_test_field"]["test_sub_field"][
-                "test_sub_field"
+            inst_1.get_data()["spec"]["nestedTestField"]["testSubField"][
+                "testSubField"
             ],
-            inst_2.get_data()["spec"]["nested_test_field"]["test_sub_field"][
-                "test_sub_field"
+            inst_2.get_data()["spec"]["nestedTestField"]["testSubField"][
+                "testSubField"
             ],
         )
 
         inst_1.nested_test_field.test_sub_field.test_sub_field = "test"
         inst_2.nested_test_field.test_sub_field.test_sub_field = "test"
         self.assertEquals(
-            inst_1.get_data()["spec"]["nested_test_field"]["test_sub_field"][
-                "test_sub_field"
+            inst_1.get_data()["spec"]["nestedTestField"]["testSubField"][
+                "testSubField"
             ],
-            inst_2.get_data()["spec"]["nested_test_field"]["test_sub_field"][
-                "test_sub_field"
+            inst_2.get_data()["spec"]["nestedTestField"]["testSubField"][
+                "testSubField"
             ],
         )
 

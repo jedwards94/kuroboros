@@ -10,6 +10,7 @@ from typing import (
     get_args,
     get_origin,
 )
+import caseconverter
 from kubernetes import client
 
 from kubernetes.client import V1OwnerReference
@@ -21,6 +22,7 @@ class CRDProp:
     """
     The class that is mapped to YAML
     """
+
     typ: str
     required: bool
     args: dict
@@ -47,15 +49,30 @@ class BaseCRDProp:
     """
     The base class for a object prop of a CRD
     """
-    _data: dict = {}
-    _parent_data: dict | None = None
-    _parent_key: str | None = None
+
+    _data: dict
+    _parent_data: dict | None
+    _parent_key: str | None
+    _attr_map: Dict[str, str]
 
     def __init__(self, *, data, _parent_data=None, _parent_key=None, **_):
+        object.__setattr__(self, "_attr_map", {})
+        for attribute, value in self.__class__.__dict__.items():
+            if (
+                attribute[:2] != "__"
+                and not callable(value)
+                and isinstance(value, CRDProp)
+            ):
+                self._attr_map[attribute] = self.__case_function(attribute)
+
         self._data = data
         self._parent_key = _parent_key
         # ALWAYS set _parent_data at the end of __init__ to avoid recursion
         self._parent_data = _parent_data
+
+    @staticmethod
+    def __case_function(text: str) -> str:
+        return caseconverter.camelcase(text)
 
     @classmethod
     def to_prop_dict(cls) -> dict:
@@ -66,30 +83,35 @@ class BaseCRDProp:
         for base in reversed(cls.__mro__):
             for k, v in base.__dict__.items():
                 if isinstance(v, CRDProp):
-                    props[k] = v
+                    props[cls.__case_function(k)] = v
         return props
 
     def __getattribute__(self, name: str):
-        data = object.__getattribute__(self, "_data")
         attr = object.__getattribute__(self, name)
+        data = None
+        try:
+            data = object.__getattribute__(self, "_data")
+        except AttributeError:
+            data = {}
         try:
             if isinstance(attr, CRDProp):
+                cased_name = self._attr_map[name]
                 if issubclass(attr.real_type, BaseCRDProp):
                     inst = attr.real_type(
-                        data=data[name], _parent_data=data, _parent_key=name
+                        data=data[cased_name], _parent_data=data, _parent_key=cased_name
                     )
                     return inst
-                return data[name]
-            else:
-                return attr
+                return data[cased_name]
+            return attr
         except Exception:  # pylint: disable=broad-except
             return None
 
     def __setattr__(self, name, value):
         # If setting a property, update both self._data and parent if present
         if hasattr(self, "_parent_data") and self._parent_data is not None:
-            self._data[name] = value
-            self._parent_data[self._parent_key][name] = value
+            cased_name = self._attr_map[name]
+            self._data[cased_name] = value
+            self._parent_data[self._parent_key][cased_name] = value
         else:
             object.__setattr__(self, name, value)
 
@@ -104,7 +126,7 @@ def prop(
     **kwargs: Any,
 ) -> T:
     """
-    Define a propertie of a CRD, the available types are 
+    Define a propertie of a CRD, the available types are
     `str`, `int`, `float`, `dict`, `bool`, `list[Any]` and
     subclasses of `BaseCRDProp`
     """
@@ -160,14 +182,20 @@ class BaseCRD:
     Defines the CRD class for your Reconciler and Webhooks
     """
 
+    status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
+
     # instance properties
+    _attr_map: Dict[str, str]
     api: client.CustomObjectsApi | None
     group_version: GroupVersionInfo | None
-    status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
-    read_only = False
-    _data: dict = {}
+    read_only: bool
+    _data: dict
 
     T = TypeVar("T", bound="BaseCRD")
+
+    @staticmethod
+    def __case_function(text: str) -> str:
+        return caseconverter.camelcase(text)
 
     @classmethod
     def create_namespaced(
@@ -259,6 +287,15 @@ class BaseCRD:
         read_only: bool = False,
         data: Dict | None = None,
     ):
+        object.__setattr__(self, "_attr_map", {})
+        for attribute, value in self.__class__.__dict__.items():
+            if (
+                attribute[:2] != "__"
+                and not callable(value)
+                and isinstance(value, CRDProp)
+            ):
+                self._attr_map[attribute] = self.__case_function(attribute)
+
         if data is None:
             data = {}
         if read_only and data == {}:
@@ -272,6 +309,12 @@ class BaseCRD:
         if self.group_version is not None:
             return f"{self.group_version.pretty_kind_str(self.namespace_name)}"
         return super().__repr__()
+
+    def attr_name(self, text: str) -> str:
+        """
+        Returns the atribute name in the cased attribute map
+        """
+        return copy.copy(self._attr_map[text])
 
     def load_data(self, data: Any):
         """
@@ -339,46 +382,49 @@ class BaseCRD:
             self.load_data(response)
 
     def __getattribute__(self, name: str):
-        data = object.__getattribute__(self, "_data")
         attr = object.__getattribute__(self, name)
+        data = None
+        try:
+            data = object.__getattribute__(self, "_data")
+        except AttributeError:
+            data = {}
 
         try:
-            if name == "status" or name == "metadata":
+            if name in ("status", "metadata"):
                 if isinstance(attr, CRDProp) and issubclass(
                     attr.real_type, BaseCRDProp
                 ):
-                    inst = attr.real_type(data=data[name])
-                    return inst
+                    return attr.real_type(data=data[name])
                 return data[name]
-            elif isinstance(attr, CRDProp):
+            if isinstance(attr, CRDProp):
+                cased_name = self._attr_map[name]
                 if issubclass(attr.real_type, BaseCRDProp):
-                    inst = attr.real_type(
-                        data=data["spec"][name],
+                    return attr.real_type(
+                        data=data["spec"][cased_name],
                         _parent_data=data["spec"],
-                        _parent_key=name,
+                        _parent_key=cased_name,
                     )
-                    return inst
-                return data["spec"][name]
-            else:
-                return attr
+                return data["spec"][cased_name]
+            return attr
         except Exception:  # pylint: disable=broad-except
             return None
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if self.read_only:
+        if hasattr(self, "read_only") and self.read_only:
             raise RuntimeError(
                 f"Cannot set attribute `{name}` on read-only CRD object `{self}`"
             )
         try:
             attr = object.__getattribute__(self, name)
-            if name == "status" or name == "metadata":
+            if name in ("status", "metadata"):
                 self._data[name] = value
             elif isinstance(attr, CRDProp):
-                self._data["spec"][name] = value
+                cased_name = self._attr_map[name]
+                self._data["spec"][cased_name] = value
             else:
-                return object.__setattr__(self, name, value)
+                object.__setattr__(self, name, value)
         except Exception:  # pylint: disable=broad-except
-            return object.__setattr__(self, name, value)
+            object.__setattr__(self, name, value)
 
     def add_finalizer(self, finalizer: str):
         """
@@ -399,7 +445,7 @@ class BaseCRD:
         """
         if "finalizers" not in self.metadata:
             return
-        elif finalizer in self.metadata["finalizers"]:
+        if finalizer in self.metadata["finalizers"]:
             self.metadata["finalizers"].remove(finalizer)
             self.patch()
         else:

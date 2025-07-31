@@ -8,7 +8,7 @@
 {%- if reqs | length > 0 %}
 required:
 {%- for req in reqs %}
-- {{ req | camel }}
+- {{ req }}
 {%- endfor %}
 {%- else %}
 required: []
@@ -17,14 +17,14 @@ required: []
 
 
 {%- macro render_prop(name, prop) %}
-{{ name | camel }}:
+{{ name }}:
   type: {{ prop.typ }}
   {%- if prop.typ == "array" %}
   items:
     type: {{ prop.subtype }}
   {%- endif %}
   {%- for key in prop.args %}
-  {{ key | camel }}: {{ prop.args[key] | yaml }}
+  {{ key | maybekebab }}: {{ prop.args[key] | yaml }}
   {%- endfor %}
   {%- if prop.subprops is not none %}
   {{- get_required(prop.subprops) | indent(2) }}

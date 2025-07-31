@@ -5,10 +5,10 @@ from kuroboros.config import config, OPERATOR_NAME
 from kuroboros.controller import ControllerConfig
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.schema import BaseCRD, CRDProp
-from kuroboros.cli.utils import parse_prop_name, yaml_format
+from kuroboros.cli.utils import x_kubernetes_kebab, yaml_format
 import kuroboros.cli.templates as temps
 
-temps.env.filters["camel"] = parse_prop_name
+temps.env.filters["maybekebab"] = x_kubernetes_kebab
 temps.env.filters["yaml"] = yaml_format
 
 crd_template = temps.env.get_template("generate/crd/crd.yaml.j2")
@@ -65,7 +65,8 @@ def crd_schema(
                 continue
             attr = object.__getattribute__(crd, attr_name)
             if isinstance(attr, CRDProp):
-                props[attr_name] = attr
+                cased_attr_name = crd.attr_name(attr_name)
+                props[cased_attr_name] = attr
 
         status = object.__getattribute__(crd, "status")
         if status.typ != "object":
@@ -86,7 +87,7 @@ def rbac_sa() -> str:
 def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
     """
     Generates the operator `Role`.
-    Loads custom `Policies` to use in the `Role` from all 
+    Loads custom `Policies` to use in the `Role` from all
     the sections that start with `generate.rbac.policies.`
     """
     config_policies = [

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 from typing import List
+import caseconverter
 import click
 
 from kuroboros.controller import ControllerConfig, ControllerConfigVersions
@@ -37,12 +38,12 @@ def yaml_format(value):
         return str(value)  # Fallback for other types
 
 
-def parse_prop_name(name: str) -> str:
+def x_kubernetes_kebab(name: str) -> str:
     """
-    Handle special cases for some prop names
+    Handle special cases for x_kubernetes_ prop prop names
     """
     if name.startswith("x_kubernetes_"):
-        return name.replace("_", "-")
+        return caseconverter.kebabcase(name)
 
     return name
 
