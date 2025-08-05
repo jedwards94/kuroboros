@@ -261,6 +261,10 @@ kuroboros [OPTIONS] COMMAND [ARGS]
 
 **Global Options:**
 - `-c, --config TEXT`  Configuration file to use (default: `operator.toml`)
+- `-l, --log-level TEXT`  Log level for the app
+
+
+`-l, --log-level` will override the `operator.log_level` in your config file.
 
 ---
 
@@ -447,6 +451,7 @@ As the deployment only includes the `[operator]` section of the config, if you w
 ```toml
 [operator]
 name = "kuroboros-operator"
+log_level = "INFO"
 leader_acquire_interval_seconds = 10
 pending_remove_interval_seconds = 5
 metrics_update_interval_seconds = 5
@@ -459,7 +464,7 @@ cert_path = "/etc/tls/tls.crt"
 key_path = "/etc/tls/tls.key"
 
 [operator.metrics]
-interval_seconds = 9
+interval_seconds = 5
 port = 8080
 
 [generate.deployment.image]
