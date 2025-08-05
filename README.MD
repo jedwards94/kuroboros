@@ -1,11 +1,8 @@
 # KUROBOROS
 
-
-
-
 ## Operator
 
-The `Operator` adds `Controllers` to watch over them and keeps track of the number of `Threads` that are running. It also runs and watch the webhook server in falcon app behind gunicorn in a separated process.
+The `Operator` adds `Controllers` to watch over them and keeps track of the number of `Threads` that are running. It also runs and watches the webhook server in a Falcon app behind Gunicorn in a separate process.
 
 ---
 
@@ -13,7 +10,7 @@ The `Operator` adds `Controllers` to watch over them and keeps track of the numb
 
 A `Controller` is composed of a `GroupVersionInfo` and a `Reconciler` and maybe `ValidationWebhook` and/or `MutationWebhook`. The `GroupVersionInfo` informs the `Controller` about which CRs it should keep track of, adding them as members when an event of `ADDED` or `MODIFIED` is received or removing them when the event is `DELETED`.
 
-Whenever a member is added, the controller starts the `reconcile` function of the `Reconciler` in a loop as a `Thread` that it keeps track of. If a `MODIFIED` event is received while the reconciliation loop is running, the event will be skipped. When the CR is finally removed from the cluster and a `DELETED` event is received, the `Controller` sends a stop event to the `Thread` and it returns as soon as possible, ignoring the interval (or backoff) returned (or raised) by the `reconcile` function.
+Whenever a member is added, the controller creates a `Reconciler` for the CR and starts the reconciliation loop `Thread` that it keeps track of. If a `MODIFIED` event is received while the reconciliation loop is running, the event will be skipped. When the CR is finally removed from the cluster and a `DELETED` event is received, the `Controller` sends a stop event to the `Reconciler` and it returns as soon as possible, ignoring the interval (or backoff) returned (or raised) by the `reconcile` function.
 
 ---
 
@@ -92,7 +89,7 @@ end
 
 ---
 
-## Group Version Info(`group_version.py`)
+## Group Version Info (`group_version.py`)
 
 The `group_version.py` file located in the `/controllers` path includes the general information about your CRD: its `kind`, `api_version`, and `group`. This file defines the behavior of the controller and the CLI over the CRD. The controller will watch for these values and the CLI will set these values in the manifests.
 
@@ -131,8 +128,7 @@ Supported types:
 
 Every `prop()` field in the class is a field in the `spec` of the CRD, except for `status`, which by default is `prop(dict, x_kubernetes_preserve_unknown_fields=True)`.
 
-Yo can create reutilizable definitions with `BaseCRDProp`
-
+You can create reusable definitions with `BaseCRDProp`.
 
 #### Keyword Arguments
 
@@ -140,7 +136,7 @@ The `prop` function uses two keyword arguments, `properties` and `required`. The
 See the [Official Kubernetes Documentation](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation) for more info.
 
 #### Classes as properties
-The `BaseCRDProp` provides a inheritable class that can be used in the `prop()` function as it's type. This is usefull so you can access the data as `my_crd.prop.subprop` instead of `my_crd.prop["subprop"]`
+The `BaseCRDProp` provides an inheritable class that can be used in the `prop()` function as its type. This is useful so you can access the data as `my_crd.prop.subprop` instead of `my_crd.prop["subprop"]`.
 
 #### Example
 ```python
@@ -169,19 +165,19 @@ class Cache(BaseCRD):
 
 ## Reconciler (`reconciler.py`)
 
-The `Reconciler` is where you implement the method `reconcile`. This function will be run on a separate `Thread` for every member of the `Controller`, so creating in-memory dictionaries and variables in the `BaseReconciler` class should be done with concurrency in mind. Every `Reconciler` **must** be a class inherited from `BaseReconciler` and be located in `reconciler.py`, otherwise the CLI won't recognize the class.
+The `Reconciler` is where you implement the method `reconcile`. The `Controller` will create a `Reconciler` for every member to run its loop in a separate `Thread`, so creating in-memory dictionaries and variables in the `BaseReconciler` class as class variables should be done with concurrency in mind. Every `Reconciler` **must** be a class inherited from `BaseReconciler` and be located in `reconciler.py`, otherwise the CLI won't recognize the class.
 
 #### Example
 
 ```python
 # example/controllers/cache/v1/reconciler.py
 from kuroboros.reconciler import BaseReconciler
-from .crd import Cache
+from controller.cache.v1.crd import Cache
 from datetime import timedelta
 import threading
 
 class CacheReconciler(BaseReconciler[Cache]):
-    def reconcile(self, logger, object: Cache, stopped: threading.Event):
+    def reconcile(self, logger, obj: Cache, stopped: threading.Event):
         if some_condition:
             return timedelta(seconds=5)
         return
@@ -191,17 +187,18 @@ class CacheReconciler(BaseReconciler[Cache]):
 
 ## Admission Webhooks
 
-Currently, only validation and mutation webhooks are supported. Both of this webhooks are optional
+Currently, only validation and mutation webhooks are supported. Both of these webhooks are optional.
 
 ### Validation Webhook (`validation.py`)
 
 Create a class with `BaseValidationWebhook` as its base and implement the methods:
-- `validate_create(data)`: method run on a `CREATE` events
+- `validate_create(data)`: method run on a `CREATE` event
 - `validate_update(data, old_data)`: method run on `UPDATE` events
+- `validate_delete(old_data)`: method run on `DELETE` events
 
-Both the `data` and `old_data` objects are `read_only` mode, wich meadns that no attribute can be changed and trying to do so will rise a expection.
+Both the `data` and `old_data` objects are in `read_only` mode, which means that no attribute can be changed and trying to do so will raise an exception.
 
-The CLI will detect this class and use it to create the mafinests and the operator will expose the endpoint `POST /<VERSION>/<SINGULAR>/validate`
+The CLI will detect this class and use it to create the manifests and the operator will expose the endpoint `POST /<VERSION>/<SINGULAR>/validate`.
 
 #### Example
 ```python
@@ -209,9 +206,12 @@ The CLI will detect this class and use it to create the mafinests and the operat
 from kuroboros.webhook import BaseValidationWebhook
 from kuroboros.exceptions import ValidationWebhookError
 
-from .crd import Cache
+from controllers.cache.v1.crd import Cache
 
 class CacheValidation(BaseValidationWebhook[Cache]):
+
+    register_on = ["CREATE", "UPDATE", "DELETE"]
+
     def validate_create(self, data: Cache):
         if "some-annotation" not in data.metadata:
             raise ValidationWebhookError("cache must have some-annotation")
@@ -223,12 +223,11 @@ class CacheValidation(BaseValidationWebhook[Cache]):
         return        
 ```
 
-
 ### Mutation Webhook (`mutation.py`)
 
-Using the `BaseMutationWebhook` class, implement the `mutate(data: MyCRD) -> MyCRD` method where you make changes to the existing object in the cluster and return it. Once returned, it will be compared against the original and JSONPatch operqations will be performed on it.
+Using the `BaseMutationWebhook` class, implement the `mutate(data: MyCRD) -> MyCRD` method where you make changes to the existing object in the cluster and return it. Once returned, it will be compared against the original and JSONPatch operations will be performed on it.
 
-Definin this class will expose the endpoint `POST /<VERSION>/<SINGULAR>/mutate` on the webhook server
+Defining this class will expose the endpoint `POST /<VERSION>/<SINGULAR>/mutate` on the webhook server.
 
 #### Example
 
@@ -261,7 +260,7 @@ kuroboros [OPTIONS] COMMAND [ARGS]
 ```
 
 **Global Options:**
-- `-c, --config TEXT`  Configuration file to use (default: `operator.conf`)
+- `-c, --config TEXT`  Configuration file to use (default: `operator.toml`)
 
 ---
 
@@ -296,13 +295,13 @@ kuroboros generate manifests
 
 ##### `generate rbac`
 Generates RBAC manifests in `./config/base/rbac`.  
-Policies are defined in your config file under `[generate.rbac.policies.*]` sections, e.g.:
+Policies are defined in your config file under `[[generate.rbac.policies]]` sections, e.g.:
 
-```ini
-[generate.rbac.policies.manage_pods]
-api_groups=
-resources=pods
-verbs=create,patch,update,list,watch
+```toml
+[[generate.rbac.policies]]
+api_groups = [""]
+resources = ["pods"]
+verbs = ["create", "patch", "update", "list", "watch"]
 ```
 
 **Usage:**
@@ -317,11 +316,11 @@ Generates deployment-related manifests in `./config/base/deployment`.
 Includes your config file as a ConfigMap with only the `[operator]` section.  
 You can set a custom image in the config file:
 
-```ini
+```toml
 [generate.deployment.image]
-registry=my.registry.io
-repository=cache-operator
-tag=v0.0.1
+registry = "my.registry.io"
+repository = "cache-operator"
+tag = "v0.0.1"
 ```
 
 **Usage:**
@@ -380,6 +379,20 @@ kuroboros new controller --kind Cache --api-version v1alpha1 --group acme.com
 ```
 
 ---
+##### `new webhook`
+Creates a new webhook in `./controllers/<api-version>`.
+
+**Options:**
+- `--kind TEXT`         The kind of the CRD  **[required]**
+  `--api-version TEXT`  The version to use (example: v1alpha1)  **[required]**
+  `--type TEXT`         The type of webhook to create (validation, mutation) **[required]**
+
+**Example:**
+```sh
+kuroboros new webhook --kind Cache --api-version v1alpha1 --type validation
+```
+
+---
 
 ##### `new operator [NAME]`
 Creates the necessary files for a new operator project.
@@ -419,10 +432,10 @@ kuroboros deploy OVERLAY
 
 The operator starts collecting and exposing metrics of the threads that it's running. These metrics are exposed by default at port `8080` and collected every 5 seconds. Both of these configurations can be changed in the config file:
 
-```ini
-[operator]
-metrics_update_interval_seconds=5
-metrics_port=8080
+```toml
+[operator.metrics]
+interval_seconds = 5
+port = 8080
 ```
 
 ---
@@ -431,12 +444,31 @@ metrics_port=8080
 
 As the deployment only includes the `[operator]` section of the config, if you wish to add an operator-level config you are encouraged to use this file. Otherwise, you can use environment variables or any other method you prefer.
 
-```ini
+```toml
 [operator]
-name=kuroboros-operator
-leader_acquire_interval_second=10
-pending_remove_interval_seconds=5
-metrics_update_interval_seconds=5
-retry_backoff_seconds=5
-metrics_port=8080
+name = "kuroboros-operator"
+leader_acquire_interval_seconds = 10
+pending_remove_interval_seconds = 5
+metrics_update_interval_seconds = 5
+retry_backoff_seconds = 5
+metrics_port = 8080
+
+[operator.webhook_server]
+port = 443
+cert_path = "/etc/tls/tls.crt"
+key_path = "/etc/tls/tls.key"
+
+[operator.metrics]
+interval_seconds = 9
+port = 8080
+
+[generate.deployment.image]
+registry = ""
+repository = "kuroboros-operator"
+tag = "latest"
+
+[[generate.rbac.policies]]
+api_groups = [""]
+resources = ["pods"]
+verbs = ["create", "patch", "update", "list", "watch"]
 ```

@@ -5,16 +5,28 @@ metadata:
   namespace: {{ name }}
 rules:
 {%- for policy in policies %}
+{%- if policy.api_groups|length > 0 %}
 - apiGroups:
   {%- for group in policy.api_groups %}
   - {{ group }}
   {%- endfor %}
+{%- else %}
+- apiGroups: []
+{%- endif %}
+{%- if policy.resources|length > 0 %}
   resources:
   {%- for resource in policy.resources %}
   - {{ resource }}
   {%- endfor %}
+{%- else %}
+  resources: []
+{%- endif %}
+{%- if policy.verbs|length > 0 %}
   verbs:
   {%- for verb in policy.verbs %}
   - {{ verb }}
   {%- endfor %}
+{%- else %}
+  verbs: []
+{%- endif %}
 {%- endfor %}

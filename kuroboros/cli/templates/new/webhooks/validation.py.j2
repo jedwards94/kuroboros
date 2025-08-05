@@ -1,0 +1,24 @@
+from kuroboros.webhook import BaseValidationWebhook
+
+from {{ module }}.crd import {{ kind }}
+
+class {{ kind }}Validation(BaseValidationWebhook[{{ kind }}]):
+
+    # Modify this class variable to register your
+    # webhook on this actions
+    register_on = ["CREATE", "UPDATE", "DELETE"]
+
+    def validate_create(self, data: {{ kind }}) -> None:
+        """
+        TODO: Implement on create validation logic
+        """
+
+    def validate_update(self, data: {{ kind }}, old_data: {{ kind }}) -> None:
+        """
+        TODO: Implement on update validation logic
+        """
+    
+    def validate_delete(self, old_data: {{ kind }}) -> None:
+        """
+        TODO: Implement on delete validation logic
+        """

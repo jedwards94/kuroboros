@@ -1,6 +1,7 @@
 import copy
 from typing import (
     Any,
+    ClassVar,
     List,
     Tuple,
     Dict,
@@ -50,29 +51,38 @@ class BaseCRDProp:
     The base class for a object prop of a CRD
     """
 
+    __attr_map: Dict[str, str] = {}
     _data: dict
     _parent_data: dict | None
     _parent_key: str | None
-    _attr_map: Dict[str, str]
 
     def __init__(self, *, data, _parent_data=None, _parent_key=None, **_):
-        object.__setattr__(self, "_attr_map", {})
-        for attribute, value in self.__class__.__dict__.items():
+        self._data = data
+        self._parent_key = _parent_key
+        # ALWAYS set _parent_data at the end of __init__ to avoid recursion
+        self._parent_data = _parent_data
+        
+    def __init_subclass__(cls) -> None:
+        for attribute, value in cls.__dict__.items():
             if (
                 attribute[:2] != "__"
                 and not callable(value)
                 and isinstance(value, CRDProp)
             ):
-                self._attr_map[attribute] = self.__case_function(attribute)
-
-        self._data = data
-        self._parent_key = _parent_key
-        # ALWAYS set _parent_data at the end of __init__ to avoid recursion
-        self._parent_data = _parent_data
+                cls.__attr_map[attribute] = cls.__case_function(attribute)
 
     @staticmethod
     def __case_function(text: str) -> str:
         return caseconverter.camelcase(text)
+    
+    
+    @classmethod
+    def attr_name(cls, text: str) -> str:
+        """
+        Returns the atribute name in the cased attribute map
+        """
+
+        return copy.copy(cls.__attr_map[text])
 
     @classmethod
     def to_prop_dict(cls) -> dict:
@@ -95,7 +105,7 @@ class BaseCRDProp:
             data = {}
         try:
             if isinstance(attr, CRDProp):
-                cased_name = self._attr_map[name]
+                cased_name = self.attr_name(name)
                 if issubclass(attr.real_type, BaseCRDProp):
                     inst = attr.real_type(
                         data=data[cased_name], _parent_data=data, _parent_key=cased_name
@@ -109,7 +119,7 @@ class BaseCRDProp:
     def __setattr__(self, name, value):
         # If setting a property, update both self._data and parent if present
         if hasattr(self, "_parent_data") and self._parent_data is not None:
-            cased_name = self._attr_map[name]
+            cased_name = self.attr_name(name)
             self._data[cased_name] = value
             self._parent_data[self._parent_key][cased_name] = value
         else:
@@ -185,9 +195,9 @@ class BaseCRD:
     status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
 
     # instance properties
-    _attr_map: Dict[str, str]
+    __attr_map: Dict[str, str] = {}
+    __group_version: ClassVar[GroupVersionInfo | None]
     api: client.CustomObjectsApi | None
-    group_version: GroupVersionInfo | None
     read_only: bool
     _data: dict
 
@@ -198,10 +208,24 @@ class BaseCRD:
         return caseconverter.camelcase(text)
 
     @classmethod
+    def set_gvi(cls, gvi: GroupVersionInfo) -> None:
+        """
+        Sets the GroupVersionInfo of the class
+        """
+        cls.__group_version = gvi
+        
+    @classmethod
+    def attr_name(cls, text: str) -> str:
+        """
+        Returns the atribute name in the cased attribute map
+        """
+
+        return copy.copy(cls.__attr_map[text])
+
+    @classmethod
     def create_namespaced(
         cls: Type[T],
         api: client.CustomObjectsApi,
-        group_version: GroupVersionInfo,
         namespace: str,
         name: str,
         spec: Dict,
@@ -210,6 +234,8 @@ class BaseCRD:
         """
         Creates a new instance of the CRD in the specified namespace.
         """
+        if cls.__group_version is None:
+            raise RuntimeError("`patch` used when group_version is `None`")
         if metadata is None:
             metadata = {}
         metadata["name"] = name
@@ -217,15 +243,15 @@ class BaseCRD:
             "metadata": metadata,
             "spec": spec,
         }
-        instance = cls(api=api, group_version=group_version, read_only=False, data=data)
+        instance = cls(api=api, read_only=False, data=data)
         cluster_data = api.create_namespaced_custom_object(
-            group=group_version.group,
+            group=cls.__group_version.group,
             namespace=namespace,
-            version=group_version.api_version,
-            plural=group_version.plural,
+            version=cls.__group_version.api_version,
+            plural=cls.__group_version.plural,
             body={
-                "kind": group_version.kind,
-                "apiVersion": f"{group_version.group}/{group_version.api_version}",
+                "kind": cls.__group_version.kind,
+                "apiVersion": f"{cls.__group_version.group}/{cls.__group_version.api_version}",
                 **instance.get_data(),
             },
         )
@@ -236,21 +262,22 @@ class BaseCRD:
     def get_namespaced(
         cls: Type[T],
         api: client.CustomObjectsApi,
-        group_version: GroupVersionInfo,
         namespace: str,
         name: str,
     ) -> T:
         """
         Get a CRD with name and namespace from the cluster
         """
+        if cls.__group_version is None:
+            raise RuntimeError("`patch` used when group_version is `None`")
         response = api.get_namespaced_custom_object(
-            group=group_version.group,
+            group=cls.__group_version.group,
             namespace=namespace,
             name=name,
-            version=group_version.api_version,
-            plural=group_version.plural,
+            version=cls.__group_version.api_version,
+            plural=cls.__group_version.plural,
         )
-        instance = cls(api=api, group_version=group_version, read_only=False)
+        instance = cls(api=api, read_only=False)
         instance.load_data(response)
         return instance
 
@@ -258,63 +285,57 @@ class BaseCRD:
     def list_namespaced(
         cls: Type[T],
         api: client.CustomObjectsApi,
-        group_version: GroupVersionInfo,
         namespace: str,
         **kwargs,
     ) -> List[T]:
         """
         Get a CRD List with name and namespace from the cluster
         """
+        if cls.__group_version is None:
+            raise RuntimeError("`patch` used when group_version is `None`")
         instances = []
         response = api.list_namespaced_custom_object(
-            group=group_version.group,
+            group=cls.__group_version.group,
             namespace=namespace,
-            version=group_version.api_version,
-            plural=group_version.plural,
+            version=cls.__group_version.api_version,
+            plural=cls.__group_version.plural,
             **kwargs,
         )
         for raw in response:
-            inst = cls(api=api, group_version=group_version, read_only=False)
+            inst = cls(api=api, read_only=False)
             inst.load_data(raw)
             instances.append(inst)
 
         return instances
 
-    def __init__(
-        self,
-        api: client.CustomObjectsApi | None = None,
-        group_version: GroupVersionInfo | None = None,
-        read_only: bool = False,
-        data: Dict | None = None,
-    ):
-        object.__setattr__(self, "_attr_map", {})
-        for attribute, value in self.__class__.__dict__.items():
+    def __init_subclass__(cls) -> None:
+        for attribute, value in cls.__dict__.items():
             if (
                 attribute[:2] != "__"
                 and not callable(value)
                 and isinstance(value, CRDProp)
             ):
-                self._attr_map[attribute] = self.__case_function(attribute)
+                cls.__attr_map[attribute] = cls.__case_function(attribute)
 
+    def __init__(
+        self,
+        api: client.CustomObjectsApi | None = None,
+        read_only: bool = False,
+        data: Dict | None = None,
+    ):
         if data is None:
             data = {}
         if read_only and data == {}:
             raise ValueError("read_only CRD must have data provided")
         self._data = copy.deepcopy(data)
         self.api = api
-        self.group_version = group_version
         self.read_only = read_only
 
     def __repr__(self) -> str:
-        if self.group_version is not None:
-            return f"{self.group_version.pretty_kind_str(self.namespace_name)}"
+        if self.__group_version is not None:
+            return f"{self.__group_version.pretty_kind_str(self.namespace_name)}"
         return super().__repr__()
 
-    def attr_name(self, text: str) -> str:
-        """
-        Returns the atribute name in the cased attribute map
-        """
-        return copy.copy(self._attr_map[text])
 
     def load_data(self, data: Any):
         """
@@ -350,32 +371,32 @@ class BaseCRD:
         """
         if self.api is None:
             raise RuntimeError("`patch` used when api is `None`")
-        if self.group_version is None:
+        if self.__group_version is None:
             raise RuntimeError("`patch` used when group_version is `None`")
 
         if self.read_only:
             raise RuntimeError(f"Cannot call `patch` on read-only CRD object `{self}`")
 
         new_state = self.get_data()
-        if self.group_version.scope == "Namespaced":
+        if self.__group_version.scope == "Namespaced":
             if "status" in self._data and patch_status:
                 response = self.api.patch_namespaced_custom_object_status(
-                    group=self.group_version.group,
+                    group=self.__group_version.group,
                     namespace=self.metadata["namespace"],
                     name=self.metadata["name"],
-                    version=self.group_version.api_version,
-                    plural=self.group_version.plural,
+                    version=self.__group_version.api_version,
+                    plural=self.__group_version.plural,
                     body={"status": self._data["status"]},
                 )
 
                 self.load_data(response)
 
             response = self.api.patch_namespaced_custom_object(
-                group=self.group_version.group,
+                group=self.__group_version.group,
                 namespace=self.metadata["namespace"],
                 name=self.metadata["name"],
-                version=self.group_version.api_version,
-                plural=self.group_version.plural,
+                version=self.__group_version.api_version,
+                plural=self.__group_version.plural,
                 body=new_state,
             )
 
@@ -397,7 +418,7 @@ class BaseCRD:
                     return attr.real_type(data=data[name])
                 return data[name]
             if isinstance(attr, CRDProp):
-                cased_name = self._attr_map[name]
+                cased_name = self.attr_name(name)
                 if issubclass(attr.real_type, BaseCRDProp):
                     return attr.real_type(
                         data=data["spec"][cased_name],
@@ -419,7 +440,7 @@ class BaseCRD:
             if name in ("status", "metadata"):
                 self._data[name] = value
             elif isinstance(attr, CRDProp):
-                cased_name = self._attr_map[name]
+                cased_name = self.attr_name(name)
                 self._data["spec"][cased_name] = value
             else:
                 object.__setattr__(self, name, value)
@@ -457,11 +478,11 @@ class BaseCRD:
         """
         if self.api is None:
             raise RuntimeError("`patch` used when api is `None`")
-        if self.group_version is None:
+        if self.__group_version is None:
             raise RuntimeError("`patch` used when group_version is `None`")
         return V1OwnerReference(
-            api_version=self.group_version.api_version,
-            kind=self.group_version.kind,
+            api_version=self.__group_version.api_version,
+            kind=self.__group_version.kind,
             name=self.name,
             uid=self.metadata["uid"],
             block_owner_deletion=block_self_deletion,

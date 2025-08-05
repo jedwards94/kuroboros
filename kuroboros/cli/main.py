@@ -27,12 +27,15 @@ from kuroboros.cli.new import (
     new_crd,
     new_dockerfile,
     new_group_versions,
+    new_mutation_webhook,
     new_reconciler,
+    new_validation_webhook,
 )
 from kuroboros.cli.deploy import kubectl_kustomize_apply
 from kuroboros.cli.utils import create_file, load_controller_configs
-from kuroboros.config import config
+from kuroboros.config import KuroborosConfig
 from kuroboros.operator import Operator
+from kuroboros.logger import root_logger
 
 
 VERSION_NUM = pyver("kuroboros")
@@ -48,27 +51,38 @@ CONTROLLERS_PATH = "controllers"
 
 sys.path.insert(0, str(Path().absolute()))
 
-controllers = load_controller_configs(CONTROLLERS_PATH)
-
 
 @click.group(help=f"Kuroboros Framework {VERSION_NUM}")
 @click.option(
     "-c",
     "--config",
     "config_file",
-    default="operator.conf",
-    help="Configuration file to use [default: opearator.conf]",
+    default="operator.toml",
+    help="Configuration file to use [default: opearator.toml]",
+)
+@click.option(
+    "-l",
+    "--log-level",
+    "log_level",
+    help="Log level for the app",
 )
 @click.pass_context
-def cli(ctx: click.Context, config_file):
+def cli(ctx: click.Context, config_file, log_level):
     """
     The CLI entrypoint
 
     Kuroboros Framework {VERSION_NUM}
     """
+
     ctx.ensure_object(dict)
     ctx.obj["config_file"] = config_file
-    config.read(config_file)
+    KuroborosConfig.load(config_file)
+    if log_level is not None:
+        root_logger.setLevel(log_level.upper())
+    else:
+        root_logger.setLevel(KuroborosConfig.get("operator", "log_level", typ=str))
+    click.echo(KuroborosConfig.get("operator", "name"))
+    ctx.obj["controllers"] = load_controller_configs(CONTROLLERS_PATH)
 
 
 @cli.command("version", help="Get kuroboros version")
@@ -88,10 +102,12 @@ def generate(ctx: click.Context):  # pylint: disable=unused-argument
 
 
 @generate.command(help="Generates the CRDs YAML manifests")
-def crd():
+@click.pass_context
+def crd(ctx):
     """
     Generates the CRDs YAML manifests
     """
+    controllers = ctx.obj["controllers"]
     click.echo("🌀 Generating CRD YAMLs")
     click.echo(f"{KUSTOMIZE_OUT}/{CRD_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, CRD_OUT)
@@ -114,10 +130,12 @@ def crd():
 
 
 @generate.command(help="Generates the RBAC YAML manifests")
-def rbac():
+@click.pass_context
+def rbac(ctx):
     """
     Generates the RBAC YAML manifests
     """
+    controllers = ctx.obj["controllers"]
     click.echo("🌀 Generating RBAC YAMLs")
     click.echo(f"{KUSTOMIZE_OUT}/{RBAC_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, RBAC_OUT)
@@ -139,10 +157,12 @@ def rbac():
 
 
 @generate.command(help="Generates the Webhooks YAML manifests")
-def webhooks():
+@click.pass_context
+def webhooks(ctx):
     """
     Generates the Webhooks YAML manifests
     """
+    controllers = ctx.obj["controllers"]
     click.echo("🌀 Generating Webhooks YAMLs")
     click.echo(f"{KUSTOMIZE_OUT}/{WEBHOOKS_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, WEBHOOKS_OUT)
@@ -163,7 +183,7 @@ def webhooks():
         )
         resources.append("validation-webhooks.yaml")
 
-    if len(ctrls_with_validation_webhooks) > 0:
+    if len(ctrls_with_mutation_webhooks) > 0:
         create_file(
             output,
             "mutation-webhooks.yaml",
@@ -186,7 +206,7 @@ def deployment(ctx):
     click.echo(f"{KUSTOMIZE_OUT}/{DEPLOYMENT_OUT}/")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OUT, DEPLOYMENT_OUT)
 
-    config_file = ctx.obj["config_file"]
+    controllers = ctx.obj["controllers"]
     resources = [
         "operator-deployment.yaml",
         "operator-config.yaml",
@@ -197,15 +217,15 @@ def deployment(ctx):
         if ctrl.has_webhooks():
             include_webhook_service = True
     image_config = []
-    if "generate.deployment.image" in config.sections():
-        reg = config.get("generate.deployment.image", "registry", fallback="")
-        repo = config.get(
-            "generate.deployment.image", "repository", fallback="kuroboros-operator"
-        )
-        tag = config.get("generate.deployment.image", "tag", fallback="latest")
-        img = repo
-        if reg != "":
-            img = f"{reg}/{repo}"
+
+    reg = KuroborosConfig.get("image", "registry", typ=str)
+    repo = KuroborosConfig.get("image", "repository", typ=str)
+    tag = KuroborosConfig.get("image", "tag", typ=str)
+    img = repo
+    if reg != "":
+        img = f"{reg}/{repo}"
+
+    if f"{img}:{tag}" != "kuroboros-operator:latest":
         image_config = [
             {
                 "name": "kuroboros-operator:latest",
@@ -219,7 +239,7 @@ def deployment(ctx):
         resources.append("webhook-service.yaml")
     create_file(output, "metrics-service.yaml", operator_metrics_service())
     create_file(output, "operator-deployment.yaml", operator_deployment())
-    create_file(output, "operator-config.yaml", operator_config(config_file))
+    create_file(output, "operator-config.yaml", operator_config())
     create_file(output, "kustomization.yaml", kustomize_file(resources, image_config))
 
 
@@ -237,10 +257,12 @@ def manifests(ctx):
 
 @generate.command(help="Generate a new overlay in config/overlays")
 @click.argument("name")
-def overlay(name):
+@click.pass_context
+def overlay(ctx, name):
     """
     Generate a new overlay in config/overlays
     """
+    controllers = ctx.obj["controllers"]
     click.echo(f"🌀 Creating new overlay {name}")
     output = os.path.join(Path().absolute(), KUSTOMIZE_OVERLAYS, name)
     paths = ["../../base/rbac", "../../base/crd", "../../base/deployment"]
@@ -300,6 +322,45 @@ def controller(kind: str, api_version: str, group: str):
     )
 
 
+@new.command(help="Creates a Webhook for a Controller given its kind and version")
+@click.option("--kind", type=str, required=True, help="The kind of the CRD")
+@click.option(
+    "--api-version",
+    type=str,
+    required=True,
+    help="The version to use (example: v1alpha1)",
+)
+@click.option(
+    "--type",
+    "typ",
+    type=str,
+    required=True,
+    help="The type of webhook to create (validation, mutation)",
+)
+def webhook(kind: str, api_version: str, typ: str):
+    """
+    Creates a Webhook for a Controller given its kind and version
+    """
+    if typ not in ("validation", "mutation"):
+        raise ValueError("type must be one of (validation, mutation)")
+    click.echo(f"🐍 Creating {kind} {typ.capitalize()}Webhook")
+    python_module = f"{CONTROLLERS_PATH}.{kind.lower()}.{api_version}"
+    wh = None
+    if typ == "mutation":
+        wh = new_mutation_webhook(kind, python_module)
+    else:
+        wh = new_validation_webhook(kind, python_module)
+
+    click.echo(f"{CONTROLLERS_PATH}/")
+    create_file(
+        f"{CONTROLLERS_PATH}/{kind.lower()}/{api_version}",
+        f"{typ}.py",
+        wh,
+        overwrite=False,
+        parents=False,
+    )
+
+
 @new.command(help="Creates a new Kuroboros Operator project")
 @click.argument("name", type=str)
 def operator(name):
@@ -337,11 +398,9 @@ def build(build_arg):
 
     Build arguments to pass to Docker (format: key=val). Can be specified multiple times.
     """
-    reg = config.get("generate.deployment.image", "registry", fallback="")
-    repo = config.get(
-        "generate.deployment.image", "repository", fallback="kuroboros-operator"
-    )
-    tag = config.get("generate.deployment.image", "tag", fallback="latest")
+    reg = KuroborosConfig.get("image", "registry", typ=str)
+    repo = KuroborosConfig.get("image", "repository", typ=str)
+    tag = KuroborosConfig.get("image", "tag", typ=str)
     img = f"{repo}:{tag}"
     if reg != "":
         img = f"{reg}/{img}"
@@ -373,13 +432,15 @@ def build(build_arg):
     default=False,
     help="Skips the webhook server startup",
 )
-def start(skip_controllers, skip_webhook_server):
+@click.pass_context
+def start(ctx, skip_controllers, skip_webhook_server):
     """
     Starts the Kuroboros Operator
 
     --skip-controllers: Skips all controllers startup
     --skip-webhook-server: Skips the webhook server startup
     """
+    controllers = ctx.obj["controllers"]
     op = Operator()
     click.echo(f"🌀🐍 Starting {op.name} ...")
     op.start(

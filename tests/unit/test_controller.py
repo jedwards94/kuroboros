@@ -1,12 +1,15 @@
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+from kuroboros import controller
 from kuroboros.controller import Controller, EventEnum
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
 from kuroboros.webhook import BaseValidationWebhook
 from kuroboros.schema import BaseCRD
 from kubernetes import client
+
+from tests.unit.test_webhook import DummyMutationWebhook
 
 
 def group_version_info():
@@ -27,6 +30,19 @@ class DummyCRD(BaseCRD):
     @property
     def finalizers(self):
         return self._finalizers
+    
+    @property
+    def name(self):
+        return self._namespace_name[1]
+    
+    @property
+    def namemespace(self):
+        return self._namespace_name[0]
+    
+    @property
+    def resource_version(self):
+        return "123"
+        
 
     def __init__(self, api=None, group_version=None):
         self._namespace_name = ("default", "dummy")
@@ -43,12 +59,11 @@ class DummyCRD(BaseCRD):
 
 
 class DummyReconciler(BaseReconciler[DummyCRD]):
-    def __init__(self):
-        self.api = None
-        super().__init__(group_version_info())
+    def __init__(self, namespace_name):
+        super().__init__(namespace_name)
 
-    def _reconcile(self, object, stop):
-        time.sleep(2)
+    def reconcilation_loop(self):
+        time.sleep(4)
 
 
 class DummyWebhookValidation(BaseValidationWebhook[DummyCRD]):
@@ -59,21 +74,20 @@ class FailDummyWebhookValidation(BaseValidationWebhook[FailDummyCRD]):
     pass
 
 
-def reconciler():
-    return DummyReconciler()
+DummyCRD.set_gvi(group_version_info())
+DummyReconciler.set_gvi(group_version_info())
+DummyWebhookValidation.set_gvi(group_version_info())
+DummyMutationWebhook.set_gvi(group_version_info())
+FailDummyCRD.set_gvi(group_version_info())
+FailDummyWebhookValidation.set_gvi(group_version_info())
 
 
-def webhook():
-    return DummyWebhookValidation(group_version_info())
 
-
-def fail_webhook():
-    return FailDummyWebhookValidation(group_version_info())
 
 
 def make_controller():
     with patch("kuroboros.controller.Controller._check_permissions"):
-        return Controller("DummyController", group_version_info(), reconciler())
+        return Controller("DummyController", group_version_info(), DummyReconciler)
 
 
 class TestController(unittest.TestCase):
@@ -81,13 +95,13 @@ class TestController(unittest.TestCase):
         self.controller = make_controller()
 
     def test_controller_init_sets_attributes(self):
-        self.assertEqual(self.controller.name, "DummycontrollerV1StableController")
-        self.assertIsInstance(self.controller.reconciler, DummyReconciler)
+        self.assertEqual(self.controller.name, "DummyControllerV1StableController")
+        self.assertIs(self.controller.reconciler, DummyReconciler)
 
     def test_controller_webhook_reconciler_equals_crd_cls(self):
         with patch("kuroboros.controller.Controller._check_permissions"):
             ctrl = Controller(
-                "DummyController", group_version_info(), reconciler(), webhook()
+                "DummyController", group_version_info(), DummyReconciler, DummyWebhookValidation
             )
             self.assertIsInstance(ctrl, Controller)
 
@@ -95,34 +109,30 @@ class TestController(unittest.TestCase):
                 Controller(
                     "DummyController",
                     group_version_info(),
-                    reconciler(),
-                    fail_webhook(),
+                    DummyReconciler,
+                    FailDummyWebhookValidation,
                 )
 
     def test_add_member_adds_thread(self):
-        crd = DummyCRD()
-        with patch("kuroboros.controller.client.CustomObjectsApi"):
-            self.controller._add_member(crd)
-        self.assertIn(crd.namespace_name, self.controller._members)
-        thread, event = self.controller._members[crd.namespace_name]
-        self.assertTrue(thread.is_alive())
-        self.assertFalse(event.is_set())
+        self.controller._add_member(("default", "dummy"))
+        self.assertIn(("default", "dummy"), self.controller._members)
+        reconciler = self.controller._members[("default", "dummy")]
+        self.assertTrue(reconciler.is_running())
+        self.assertFalse(reconciler._stop.is_set())
 
     def test_add_member_duplicate(self):
-        crd = DummyCRD()
-        with patch("kuroboros.controller.client.CustomObjectsApi"):
-            self.controller._add_member(crd)
-            before = len(self.controller._members)
-            self.controller._add_member(crd)
-            after = len(self.controller._members)
+        
+        self.controller._add_member(("default", "dummy"))
+        before = len(self.controller._members)
+        self.controller._add_member(("default", "dummy"))
+        after = len(self.controller._members)
         self.assertEqual(before, after)
 
-    def test_remove_member_removes_and_sets_event(self):
-        crd = DummyCRD()
-        with patch("kuroboros.controller.client.CustomObjectsApi"):
-            self.controller._add_member(crd)
-        self.controller._remove_member(crd.namespace_name)
-        self.assertNotIn(crd.namespace_name, self.controller._members)
+    def test_remove_member_stops_reconciler(self):
+        self.controller._add_member(("default", "dummy"))
+        self.controller._remove_member(("default", "dummy"))
+        reconciler = self.controller._members[("default", "dummy")]
+        self.assertFalse(reconciler.is_running())
 
     def test_add_pending_remove(self):
         ns_name = ("default", "dummy")
@@ -232,7 +242,7 @@ class TestController(unittest.TestCase):
             mock_instance.create_self_subject_access_review.return_value.status = (
                 MagicMock(allowed=True, denied=False)
             )
-            ctrl = Controller("DummyController", group_version_info(), reconciler())
+            ctrl = Controller("DummyController", group_version_info(), DummyReconciler)
             # Should not raise
             ctrl._check_permissions()
 
@@ -253,4 +263,4 @@ class TestController(unittest.TestCase):
 
             mock_instance.create_self_subject_access_review.side_effect = denied_review
             with self.assertRaises(RuntimeWarning):
-                Controller("DummyController", group_version_info(), reconciler())
+                Controller("DummyController", group_version_info(), DummyReconciler)

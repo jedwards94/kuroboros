@@ -21,13 +21,16 @@ def make_group_version():
     return GroupVersionInfo(
         group="testgroup", api_version="v1", plural="dummies", kind="Dummy"
     )
+    
+TestCrd.set_gvi(make_group_version())
+DummyReconciler.set_gvi(make_group_version())
 
 
 controller = ControllerConfig()
 controller.group_version_info = make_group_version()
 ctrl_version = ControllerConfigVersions()
-ctrl_version.crd = TestCrd()
-ctrl_version.reconciler = DummyReconciler(make_group_version())
+ctrl_version.crd = TestCrd
+ctrl_version.reconciler = DummyReconciler
 ctrl_version.name = "v1"
 
 controller.versions = [ctrl_version]
@@ -67,9 +70,8 @@ class TestOperator(unittest.TestCase):
     def test_add_controller_adds_controller(self):
         operator = Operator()
         group_version = make_group_version()
-        reconciler = DummyReconciler(group_version)
         with patch("kuroboros.operator.Gauge"):
-            operator._add_controller("test", group_version, reconciler)
+            operator._add_controller("test", group_version, DummyReconciler)
         self.assertEqual(len(operator.controllers), 1)
         self.assertIsInstance(operator.controllers[0], Controller)
 
@@ -77,20 +79,18 @@ class TestOperator(unittest.TestCase):
         operator = Operator()
         operator._running = True
         group_version = make_group_version()
-        reconciler = DummyReconciler(group_version)
         with patch("kuroboros.operator.Gauge"):
             with self.assertRaises(RuntimeError):
-                operator._add_controller("test", group_version, reconciler)
+                operator._add_controller("test", group_version, DummyReconciler)
         operator._running = False
 
     def test_add_duplicate_controller_raises(self):
         operator = Operator()
         group_version = make_group_version()
-        reconciler = DummyReconciler(group_version)
         with patch("kuroboros.operator.Gauge"):
-            operator._add_controller("test", group_version, reconciler)
+            operator._add_controller("test", group_version, DummyReconciler)
             with self.assertRaises(RuntimeError):
-                operator._add_controller("test", group_version, reconciler)
+                operator._add_controller("test", group_version, DummyReconciler)
 
     def test_start_without_controllers_raises(self):
         operator = Operator()
@@ -100,9 +100,8 @@ class TestOperator(unittest.TestCase):
     def test_start_twice_raises(self):
         operator = Operator()
         group_version = make_group_version()
-        reconciler = DummyReconciler(group_version)
         with patch("kuroboros.operator.Gauge"):
-            operator._add_controller("test", group_version, reconciler)
+            operator._add_controller("test", group_version, DummyReconciler)
             operator._running = True
             with self.assertRaises(RuntimeError):
                 operator.start(controllers=controller_configs)
@@ -111,9 +110,8 @@ class TestOperator(unittest.TestCase):
     def test_metrics_loop_runs(self):
         operator = Operator()
         group_version = make_group_version()
-        reconciler = DummyReconciler(group_version)
         with patch.object(operator, "_threads_by_reconciler") as mock_gauge:
-            operator._add_controller("test", group_version, reconciler)
+            operator._add_controller("test", group_version, DummyReconciler)
             # Patch the class-level private dict
             with patch("kuroboros.operator.event_aware_sleep", side_effect=Exception("break")):
                 try:

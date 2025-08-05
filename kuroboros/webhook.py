@@ -2,6 +2,7 @@ from typing import Generic, Type, TypeVar, get_args, get_origin
 import json
 import base64
 
+import caseconverter
 import falcon
 import jsonpatch
 
@@ -37,21 +38,56 @@ class BaseWebhook(Generic[T]):
     The Base Webhook Class, all webhook should implement this
     """
 
+    @classmethod
+    def set_gvi(cls, gvi: GroupVersionInfo) -> None:
+        """
+        Sets the GroupVersionInfo of the Reconciler
+        """
+        cls.__group_version_info = gvi
+        
+    @classmethod
+    def get_config_dict(cls):
+        """
+        Returns the config dict to generate the kubernetes YAML
+        """
+        return {
+            "crd_name": cls.__group_version_info.crd_name,
+            "group": cls.__group_version_info.group,
+            "singular": cls.__group_version_info.singular, 
+            "plural": cls.__group_version_info.plural, 
+            "api_version": cls.__group_version_info.api_version,
+            "operations": cls.register_on,
+            "scope": cls.__group_version_info.scope
+        }
+
+    __group_version_info: GroupVersionInfo
+
     name: str
     logger = klogger.root_logger.getChild(__name__)
+    register_on = []
+
     _endpoint: str
     _type: Type[T]
-    _group_version_info: GroupVersionInfo
     _webhook_type: str
     _generic_base_type = None
     _endpoint_suffix: str
 
-    @property
-    def crd_type(self) -> Type[T]:
+    @classmethod
+    def crd_type(cls) -> Type[T]:
         """
         Returns the type of CRD that this webhook handle
         """
-        return self._type
+        t_type = None
+        for base in getattr(cls, "__orig_bases__", []):
+            origin = get_origin(base)
+            if origin in (BaseValidationWebhook, BaseMutationWebhook):
+                t_type = get_args(base)[0]
+                break
+
+        if t_type is None or BaseCRD not in t_type.__mro__:
+            raise RuntimeError("Could not determine generic type T. ")
+
+        return t_type
 
     @property
     def endpoint(self) -> str:
@@ -59,30 +95,15 @@ class BaseWebhook(Generic[T]):
         Returns the endpoint to this webhook.
         Its formed by <apiVersion>/<singular>/<webhook_suffix>
         """
-        gvi = self._group_version_info
+        gvi = self.__group_version_info
         return f"/{gvi.api_version}/{gvi.singular}/{self._endpoint_suffix}"
+    
 
-    def __init__(self, group_version_info: GroupVersionInfo) -> None:
-        self._group_version_info = group_version_info
-
-        pretty_version = group_version_info.pretty_version_str()
-        singular = group_version_info.singular.capitalize()
-        self.name = f"{singular}{pretty_version}{self._webhook_type}Webhook"
+    def __init__(self) -> None:
+        pretty_version = self.__group_version_info.pretty_version_str()
+        singular = self.__group_version_info.singular.capitalize()
+        self.name = caseconverter.pascalcase(f"{singular}{pretty_version}{self._webhook_type}Webhook")
         self.logger = self.logger.getChild(self.name)
-        t_type = None
-        for base in getattr(self.__class__, "__orig_bases__", []):
-            origin = get_origin(base)
-            if origin is self._generic_base_type:
-                t_type = get_args(base)[0]
-                break
-
-        if t_type is None or BaseCRD not in t_type.__mro__:
-            raise RuntimeError(
-                "Could not determine generic type T. "
-                f"Subclass Base{self._webhook_type}Webhook with a concrete CRD type"
-            )
-
-        self._type = t_type
 
     def process(self, body: bytes):
         """
@@ -109,11 +130,10 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
     Registers an endpoint in /<apiVersion>/<singular>/validate
     """
 
-    def __init__(self, group_version_info: GroupVersionInfo) -> None:
-        self._webhook_type = WebhookTypes.VALIDATION
-        self._generic_base_type = BaseValidationWebhook
-        self._endpoint_suffix = "validate"
-        super().__init__(group_version_info)
+    _webhook_type = WebhookTypes.VALIDATION
+    _endpoint_suffix = "validate"
+
+    register_on = [OperationsEnum.CREATE, OperationsEnum.UPDATE, OperationsEnum.DELETE]
 
     def validate_create(self, data: T) -> None:
         """
@@ -142,15 +162,16 @@ class BaseValidationWebhook(BaseWebhook, Generic[T]):
 
             # Convert obj/old_obj to CRD instance if needed
             crd_instance = (
-                self._type(api=None, group_version=None, read_only=True, data=obj)
-                if obj
-                else None
+                self.crd_type()(api=None, read_only=True, data=obj) if obj else None
             )
             old_crd_instance = (
-                self._type(api=None, group_version=None, read_only=True, data=old_obj)
+                self.crd_type()(api=None, read_only=True, data=old_obj)
                 if old_obj
                 else None
             )
+            
+            if operation not in self.register_on:
+                raise ValidationWebhookError(f"unsupported operation: {operation}")
 
             if operation == OperationsEnum.CREATE:
                 assert (
@@ -248,11 +269,20 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
     Kuroboros BaseMutationWebhook.
     Registers an endpoint in /<apiVersion>/<singular>/mutate
     """
-    def __init__(self, group_version_info: GroupVersionInfo) -> None:
-        self._webhook_type = WebhookTypes.MUTATION
-        self._generic_base_type = BaseMutationWebhook
-        self._endpoint_suffix = "mutate"
-        super().__init__(group_version_info)
+
+    _webhook_type = WebhookTypes.MUTATION
+    _endpoint_suffix = "mutate"
+
+    register_on = [OperationsEnum.CREATE, OperationsEnum.UPDATE]
+
+    def __init__(self):
+        for reg in self.register_on:
+            if reg not in (OperationsEnum.CREATE, OperationsEnum.UPDATE):
+                raise RuntimeError(
+                    "unsupported type to register.", "supported `CREATE` or `UPDATE`",
+                    reg
+                )
+        super().__init__()
 
     def mutate(self, data: T) -> T:
         """
@@ -270,14 +300,10 @@ class BaseMutationWebhook(BaseWebhook, Generic[T]):
             obj = request.get("object")
 
             # Convert obj to CRD instance if needed
-            crd_instance = (
-                self._type(api=None, group_version=None, data=obj) if obj else None
-            )
-            mutate_instance = (
-                self._type(api=None, group_version=None, data=obj) if obj else None
-            )
+            crd_instance = self.crd_type()(api=None, data=obj) if obj else None
+            mutate_instance = self.crd_type()(api=None, data=obj) if obj else None
 
-            if operation not in (OperationsEnum.CREATE, OperationsEnum.UPDATE):
+            if operation not in self.register_on:
                 raise MutationWebhookError(f"unsupported operation: {operation}")
 
             assert crd_instance is not None, "CRD instance cannot be None for mutation"

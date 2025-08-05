@@ -3,23 +3,23 @@ import signal
 import sys
 import threading
 import time
-from typing import Dict, List, Tuple, cast
+from typing import Dict, List, Tuple, Type, cast
 import uuid
 
+import caseconverter
 from kubernetes import client, config
 from prometheus_client import Gauge, start_http_server
 
 from kuroboros import logger
 from kuroboros.config import (
-    OPERATOR_NAME,
     OPERATOR_NAMESPACE,
-    config as kuroboros_config,
+    KuroborosConfig
 )
 from kuroboros.controller import Controller, ControllerConfig
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
 from kuroboros.utils import event_aware_sleep
-from kuroboros.webhook import BaseWebhook
+from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook, BaseWebhook
 from kuroboros.webhook_server import HTTPSWebhookServer
 
 
@@ -29,23 +29,12 @@ class Operator:
     start the webhook server and start the controllers reconcilation loops
     """
 
-    __METRICS_INTERVAL = float(
-        kuroboros_config.getfloat(
-            "operator", "metrics_update_interval_seconds", fallback=5.0
-        )
-    )
-    __METRICS_PORT = int(
-        kuroboros_config.getint("operator", "metrics_port", fallback=8080)
-    )
-    __CERT_PATH = kuroboros_config.get(
-        "operator", "cert_path", fallback="/etc/tls/tls.crt"
-    )
-    __KEY_PATH = kuroboros_config.get(
-        "operator", "key_path", fallback="/etc/tls/tls.key"
-    )
-    __WEBHOOK_PORT = int(
-        kuroboros_config.getint("operator", "webhook_port", fallback=443)
-    )
+    _leader_interval: float
+    _metrics_interval: float
+    _metrics_port: int
+    _cert_path: str
+    _key_path: str
+    _webhook_port: int
     _running: bool
     _uid: str
     _logger = logger.root_logger.getChild(__name__)
@@ -58,15 +47,31 @@ class Operator:
     _interrupted = False
 
     _namespace: str
-    name = OPERATOR_NAME
-
     _controllers: List[Controller]
     _controller_threads: Dict[Controller, Tuple[threading.Thread, threading.Thread]] = (
         {}
     )
+    
+    name: str
 
     def __init__(self) -> None:
-        
+        self.name = KuroborosConfig.get("operator", "name", typ=str)
+        self._leader_interval = KuroborosConfig.get(
+            "operator", "leader_acquire_interval_seconds", typ=float
+        )
+        self._metrics_interval = KuroborosConfig.get(
+            "operator", "metrics", "interval_seconds", typ=float
+        )
+        self._metrics_port = KuroborosConfig.get("operator", "metrics", "port", typ=int)
+        self._cert_path = KuroborosConfig.get(
+            "operator", "webhook_server", "cert_path", typ=str
+        )
+        self._key_path = KuroborosConfig.get(
+            "operator", "webhook_server", "key_path", typ=str
+        )
+        self._webhook_port = KuroborosConfig.get(
+            "operator", "webhook_server", "port", typ=int
+        )
         self._threads_by_reconciler = Gauge(
             "kuroboros_python_threads_by_reconciler",
             "The number of threads running by the CRD controller",
@@ -82,7 +87,7 @@ class Operator:
         self._is_leader = threading.Event()
         self._uid = str(uuid.uuid4())
         self._namespace = OPERATOR_NAMESPACE
-        self._logger = self._logger.getChild(self.name)
+        self._logger = self._logger.getChild(caseconverter.pascalcase(self.name))
         self._stop = threading.Event()
         try:
             config.load_kube_config()
@@ -126,8 +131,9 @@ class Operator:
         self,
         name: str,
         group_version: GroupVersionInfo,
-        reconciler: BaseReconciler,
-        **kwargs,
+        reconciler: Type[BaseReconciler],
+        validation_webhook: Type[BaseValidationWebhook] | None = None,
+        mutation_webhook: Type[BaseMutationWebhook] | None = None,
     ) -> None:
         if self.is_running():
             raise RuntimeError("cannot add controller while operator is running")
@@ -136,8 +142,8 @@ class Operator:
             name=name,
             group_version_info=group_version,
             reconciler=reconciler,
-            validation_webhook=kwargs.get("validation_webhook", None),
-            mutation_webhook=kwargs.get("mutation_webhook", None),
+            validation_webhook=validation_webhook,
+            mutation_webhook=mutation_webhook,
         )
         if controller.name in [ctrl.name for ctrl in self._controllers]:
             raise RuntimeError("cannot add an already added controller")
@@ -146,7 +152,7 @@ class Operator:
 
     def _acquire_leader_lease(self):
         api = client.CoordinationV1Api()
-        lease_name = f"{self.name}-leader"
+        lease_name = f"{caseconverter.kebabcase(self.name)}-leader"
         lease_duration = 10
         self._logger.info(f"trying to acquire leadership with uid: {self._uid}")
         while not self._stop.is_set():
@@ -198,21 +204,17 @@ class Operator:
                     self._logger.info(f"leadership acquired under uid {self._uid}")
                     self._is_leader.set()
 
-            time.sleep(
-                kuroboros_config.getfloat(
-                    "operator", "leader_acquire_interval_seconds", fallback=10.0
-                )
-            )
+            time.sleep(self._leader_interval)
 
     def _metrics(self) -> None:
 
         while not self._stop.is_set():
             for ctrl in self._controllers:
                 self._threads_by_reconciler.labels(
-                    OPERATOR_NAMESPACE, ctrl.reconciler.__class__.__name__
+                    OPERATOR_NAMESPACE, ctrl.reconciler.__name__
                 ).set(ctrl.threads)
             self._python_threads.set(threading.active_count())
-            event_aware_sleep(self._stop, self.__METRICS_INTERVAL)
+            event_aware_sleep(self._stop, self._metrics_interval)
 
     def start(
         self,
@@ -267,10 +269,10 @@ class Operator:
 
             if len(webhooks) > 0:
                 webhook_server = HTTPSWebhookServer(
-                    cert_file=self.__CERT_PATH,
-                    key_file=self.__KEY_PATH,
+                    cert_file=self._cert_path,
+                    key_file=self._key_path,
                     endpoints=webhooks,
-                    port=self.__WEBHOOK_PORT,
+                    port=self._webhook_port,
                 )
                 self._webhook_server_process = multiprocessing.Process(
                     target=webhook_server.start,
@@ -301,7 +303,7 @@ class Operator:
 
         # start metrics maybe
         try:
-            start_http_server(self.__METRICS_PORT)
+            start_http_server(self._metrics_port)
         except Exception:  # pylint: disable=broad-except
             self._logger.warning("metrics http server could not be started")
 

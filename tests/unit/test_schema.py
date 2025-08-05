@@ -27,6 +27,8 @@ class TestCrdWithSubProp(BaseCRD):
 class TestCrd(BaseCRD):
     test_field = prop(str)
     not_in_data = prop(int)
+    
+TestCrd.set_gvi(test_api_group)
 
 
 class TestInit(unittest.TestCase):
@@ -170,7 +172,7 @@ class TestInstance(unittest.TestCase):
         patch_cr_status_mock.side_effect = mock_patch_cr_status
         patch_cr_mock.side_effect = mock_patch_cr
 
-        inst = TestCrd(api=client.CustomObjectsApi(), group_version=test_api_group)
+        inst = TestCrd(api=client.CustomObjectsApi())
         inst.load_data(data)
 
         inst.status = {"another": "one"}
@@ -187,25 +189,6 @@ class TestInstance(unittest.TestCase):
         patch_cr_status_mock.assert_called_once()
         self.assertEqual(patch_cr_mock.call_count, 2)
 
-    def test_wrong_patch_time(self):
-
-        data = {
-            "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {"test_field": "testing string"},
-            "status": {"some": "thing"},
-        }
-
-        inst = TestCrd(group_version=test_api_group)
-        inst.load_data(data)
-
-        with self.assertRaises(RuntimeError):
-            inst.patch()
-
-        inst = TestCrd(api=client.CustomObjectsApi())
-        inst.load_data(data)
-
-        with self.assertRaises(RuntimeError):
-            inst.patch()
 
     def test_helpers(self):
         data = {
@@ -214,7 +197,7 @@ class TestInstance(unittest.TestCase):
             "status": {"some": "thing"},
         }
 
-        inst = TestCrd(group_version=test_api_group, api=client.CustomObjectsApi())
+        inst = TestCrd(api=client.CustomObjectsApi())
         inst.load_data(data)
 
         with patch("kuroboros.schema.BaseCRD.patch") as mock_patch:

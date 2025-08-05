@@ -14,11 +14,6 @@ class DummyCRD(BaseCRD):
 
 
 class DummyValidationWebhook(BaseValidationWebhook[DummyCRD]):
-    _endpoint = "/validate"
-
-    def __init__(self, group_version_info):
-        super().__init__(group_version_info)
-        self.group_version_info = group_version_info
 
     def validate_create(self, data: DummyCRD) -> None:
         if getattr(data, "fail", False):
@@ -42,9 +37,11 @@ def make_group_version():
 
 class TestValidationWebhook(unittest.TestCase):
     def setUp(self):
-        self.webhook = DummyValidationWebhook(make_group_version())
+        DummyValidationWebhook.set_gvi(make_group_version())
+        self.webhook = DummyValidationWebhook()
 
     def test_validate_create_success(self):
+        DummyValidationWebhook.crd_type()
         admission_review = {
             "apiVersion": "admission.k8s.io/v1",
             "kind": "AdmissionReview",
@@ -126,11 +123,9 @@ class DummyMutationCRD(BaseCRD):
 
 
 class DummyMutationWebhook(BaseMutationWebhook[DummyMutationCRD]):
-    _endpoint = "/mutate"
 
-    def __init__(self, group_version_info):
-        super().__init__(group_version_info)
-        self.group_version_info = group_version_info
+    def __init__(self):
+        super().__init__()
 
     def mutate(self, data: DummyMutationCRD) -> DummyMutationCRD:
         # Example mutation: add a field if not present
@@ -139,13 +134,14 @@ class DummyMutationWebhook(BaseMutationWebhook[DummyMutationCRD]):
             d["spec"]["mutated"] = True
         else:
             d["spec"]["mutated"] = False
-        mutated = DummyMutationCRD(api=None, group_version=None, data=d)
+        mutated = DummyMutationCRD(api=None, data=d)
         return mutated
 
 
 class TestMutationWebhook(unittest.TestCase):
     def setUp(self):
-        self.webhook = DummyMutationWebhook(make_group_version())
+        DummyMutationWebhook.set_gvi(make_group_version())
+        self.webhook = DummyMutationWebhook()
 
     def test_mutate_create_success(self):
         admission_review = {

@@ -1,7 +1,8 @@
-from typing import Generic, Type, TypeVar, get_args, get_origin
+from typing import ClassVar, Generic, Tuple, Type, TypeVar, get_args, get_origin
 import threading
 from datetime import timedelta
 from logging import Logger
+import caseconverter
 from kubernetes import client
 
 from kuroboros.exceptions import RetriableException, UnrecoverableException
@@ -14,23 +15,33 @@ T = TypeVar("T", bound=BaseCRD)
 
 
 class BaseReconciler(Generic[T]):
+    """
+    The base Reconciler.
+    This class perform the reconcilation logic in `reconcile`
+    """
+
+    __group_version_info: ClassVar[GroupVersionInfo]
+    _logger = root_logger.getChild(__name__)
+    _stop: threading.Event
+    _running: bool
+    _loop_thread: threading.Thread
+    _namespace_name: Tuple[str, str]
 
     reconcile_timeout: timedelta | None = None
     timeout_retry: bool = False
     timeout_requeue_time: timedelta | None = timedelta(minutes=5)
 
-    __api: client.CustomObjectsApi
+    api: client.CustomObjectsApi
+    crd_inst: T
+    name: str
 
-    _type: Type[T]
-    _logger = root_logger.getChild(__name__)
-
-    _group_version_info: GroupVersionInfo
-
-    def __init__(self, group_version: GroupVersionInfo):
-        self._logger = self._logger.getChild(self.__class__.__name__)
-        self._group_version_info = group_version
+    @classmethod
+    def crd_type(cls) -> Type[T]:
+        """
+        Return the class of the CRD
+        """
         t_type = None
-        for base in getattr(self.__class__, "__orig_bases__", []):
+        for base in getattr(cls, "__orig_bases__", []):
             origin = get_origin(base)
             if origin is BaseReconciler:
                 t_type = get_args(base)[0]
@@ -42,88 +53,96 @@ class BaseReconciler(Generic[T]):
                 "Subclass BaseReconciler with a concrete CRD type"
             )
 
-        self._type = t_type
+        return t_type
 
-    @property
-    def api(self):
-        return self.__api
-
-    @api.setter
-    def api(self, value):
-        self.__api = value
-
-    @property
-    def crd_type(self) -> Type[T]:
+    @classmethod
+    def set_gvi(cls, gvi: GroupVersionInfo) -> None:
         """
-        Returns the CRD class
+        Sets the GroupVersionInfo of the Reconciler
         """
-        return self._type
+        cls.__group_version_info = gvi
 
-    def reconcilation_loop(self, obj: T, stop: threading.Event):
+    def __init__(self, namespace_name: Tuple[str, str]):
+        self.api = client.CustomObjectsApi()
+        self._stop = threading.Event()
+        self._running = False
+        pretty_version = self.__group_version_info.pretty_version_str()
+        self.name = f"{caseconverter.pascalcase(self.__class__.__name__)}{pretty_version}"
+        self._logger = self._logger.getChild(self.name)
+        self._namespace_name = namespace_name
+
+    def __repr__(self) -> str:
+        if self._namespace_name is not None:
+            return f"{self.name}(Namespace={self._namespace_name[0]}, Name={self._namespace_name[1]})"
+        return f"{self.name}"
+
+    def reconcilation_loop(self):
         """
         Runs the reconciliation loop of every object
         while its a member of the `Controller`
         """
         interval = None
-        while not stop.is_set():
+        crd_inst = self.crd_type()(api=self.api)
+        while not self._stop.is_set():
             try:
-                latest = self.__api.get_namespaced_custom_object(
-                    group=self._group_version_info.group,
-                    version=self._group_version_info.api_version,
-                    name=obj.name,
-                    namespace=obj.namespace,
-                    plural=self._group_version_info.plural,
+                latest = self.api.get_namespaced_custom_object(
+                    group=self.__group_version_info.group,
+                    version=self.__group_version_info.api_version,
+                    namespace=self._namespace_name[0],
+                    name=self._namespace_name[1],
+                    plural=self.__group_version_info.plural,
                 )
-                inst = self._type(
-                    api=self.__api, group_version=self._group_version_info
+                crd_inst.load_data(latest)
+                inst_logger, filt = reconciler_logger(
+                    self.__group_version_info, crd_inst
                 )
-                inst.load_data(latest)
-                inst_logger, filt = reconciler_logger(self._group_version_info, inst)
                 if self.reconcile_timeout is None:
                     interval = self.reconcile(
-                        logger=inst_logger, obj=inst, stopped=stop
+                        logger=inst_logger, obj=crd_inst, stopped=self._stop
                     )
                 else:
                     interval = with_timeout(
-                        stop,
+                        self._stop,
                         self.timeout_retry,
                         self.reconcile_timeout.total_seconds(),
                         self.reconcile,
                         logger=inst_logger,
-                        obj=inst,
-                        stopped=stop,
+                        obj=crd_inst,
+                        stopped=self._stop,
                     )
                 inst_logger.removeFilter(filt)
 
             except client.ApiException as e:
                 if e.status == 404:
                     self._logger.info(e)
-                    self._logger.info("%s no longer found, killing thread", obj)
+                    self._logger.info(
+                        "%s no longer found, killing thread", crd_inst
+                    )
                 else:
                     self._logger.fatal(
                         "A `APIException` ocurred while proccessing %s: %s",
-                        obj,
+                        crd_inst,
                         e,
                         exc_info=True,
                     )
             except UnrecoverableException as e:
                 self._logger.fatal(
                     "A `UnrecoverableException` ocurred while proccessing %s: %s",
-                    obj,
+                    crd_inst,
                     e,
                     exc_info=True,
                 )
             except RetriableException as e:
                 self._logger.warning(
                     "A `RetriableException` ocurred while proccessing %s: %s",
-                    obj,
+                    crd_inst,
                     e,
                 )
                 interval = e.backoff
             except TimeoutError as e:
                 self._logger.warning(
                     "A `TimeoutError` ocurred while proccessing %s: %s",
-                    obj,
+                    crd_inst,
                     e,
                 )
                 if not self.timeout_retry:
@@ -136,20 +155,23 @@ class BaseReconciler(Generic[T]):
             except Exception as e:  # pylint: disable=broad-exception-caught
                 self._logger.error(
                     "An `Exception` ocurred while proccessing %s: %s",
-                    obj,
+                    crd_inst,
                     e,
                     exc_info=True,
                 )
 
             if interval is not None:
                 assert isinstance(interval, timedelta)
-                event_aware_sleep(stop, interval.total_seconds())
+                event_aware_sleep(self._stop, interval.total_seconds())
             else:
                 break
-        self._logger.info("%s reconcile loop stopped", obj)
+        self._logger.debug("%s reconcile loop stopped", crd_inst)
 
     def reconcile(
-        self, logger: Logger, obj: T, stopped: threading.Event #pylint: disable=unused-argument
+        self,
+        logger: Logger,  # pylint: disable=unused-argument
+        obj: T,  # pylint: disable=unused-argument
+        stopped: threading.Event,  # pylint: disable=unused-argument
     ) -> None | timedelta:  # pylint: disable=unused-argument
         """
         The function that reconcile the object to the desired status.
@@ -161,3 +183,37 @@ class BaseReconciler(Generic[T]):
         If its `None` it will never run again until further updates or a controller restart
         """
         return None
+
+    def start(self):
+        """
+        Starts the reconcilation loop
+        """
+        if self._running:
+            raise RuntimeError(
+                "cannot start an already started reconciler",
+                f"{self.crd_type().__class__}-{self._namespace_name}",
+            )
+        loop_thread = threading.Thread(
+            target=self.reconcilation_loop,
+            daemon=True,
+            name=f"{self.name}-{self._namespace_name}",
+        )
+        loop_thread.start()
+        self._running = True
+        self._loop_thread = loop_thread
+
+    def stop(self):
+        """
+        Stops the reconciliation loop
+        """
+        self._logger.debug("stopping %s thread", self._loop_thread.name)
+        if not self.is_running():
+            return
+        self._stop.set()
+        self._running = False
+
+    def is_running(self) -> bool:
+        """
+        Checks if the reconciler is running
+        """
+        return self._running and self._loop_thread.is_alive()

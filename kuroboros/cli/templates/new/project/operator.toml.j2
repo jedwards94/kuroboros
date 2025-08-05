@@ -1,0 +1,31 @@
+[operator]
+name = "{{ name }}"
+# leader_acquire_interval_seconds = 10
+# pending_remove_interval_seconds = 5
+
+## Your SSL Config
+# [operator.webhook_server]
+# port = 443
+# cert_path = ""
+# key_path = ""
+
+## Operator Metrics
+# [operator.metrics]
+# interval_seconds = 9
+# port = 8080
+
+## Example configuration to set image in Kustomization and other porcesses
+# [image]
+# registry = "my.registry.io"
+# repository = "kuroboros-operator"
+# tag = "v0.0.1"
+
+
+## Generate command related
+# [generate]
+# 
+# ## Creates a new policy for the operator-role
+# [[generate.rbac.policies]]
+# api_groups = [""]
+# resources = ["pods"]
+# verbs = ["create", "patch", "update", "list", "watch"]

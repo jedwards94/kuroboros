@@ -48,12 +48,14 @@ def x_kubernetes_kebab(name: str) -> str:
     return name
 
 
-def create_file(output: str, file_name: str, data: str, overwrite: bool = True):
+def create_file(
+    output: str, file_name: str, data: str, overwrite: bool = True, parents: bool = True
+):
     """
     Creates a file in a given path
     """
     p = Path(f"{output}/{file_name}")
-    p.parent.mkdir(parents=True, exist_ok=True)
+    p.parent.mkdir(parents=parents, exist_ok=True)
     if p.is_file() and not overwrite:
         click.echo(f"not overwriten: {file_name}.")
         return
@@ -179,14 +181,17 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                                 raise MultipleDefinitionsException(
                                     ctrl_versions.reconciler, controller, version
                                 )
-                            ctrl_versions.reconciler = obj(group_version)
+                            obj.set_gvi(group_version)
+                            ctrl_versions.reconciler = obj
                     elif module_name == "crd":  # Load CRD from crd.py
                         if BaseCRD in obj.__bases__:
                             if ctrl_versions.crd is not None:
                                 raise MultipleDefinitionsException(
                                     ctrl_versions.crd, controller, version
                                 )
-                            ctrl_versions.crd = obj(group_version)
+
+                            obj.set_gvi(group_version)
+                            ctrl_versions.crd = obj
                     elif (
                         module_name == "validation"
                     ):  # Load validation webhook from validation.py
@@ -197,7 +202,8 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                                     controller,
                                     version,
                                 )
-                            ctrl_versions.validation_webhook = obj(group_version)
+                            obj.set_gvi(group_version)
+                            ctrl_versions.validation_webhook = obj
                     elif (
                         module_name == "mutation"
                     ):  # Load mutation webhook from validation.py
@@ -206,7 +212,8 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                                 raise MultipleDefinitionsException(
                                     ctrl_versions.mutation_webhook, controller, version
                                 )
-                            ctrl_versions.mutation_webhook = obj(group_version)
+                            obj.set_gvi(group_version)
+                            ctrl_versions.mutation_webhook = obj
                 # Only append after all fields are set and only if valid
                 if (
                     ctrl_versions.reconciler is not None

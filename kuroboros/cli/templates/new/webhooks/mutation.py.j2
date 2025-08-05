@@ -1,0 +1,14 @@
+from kuroboros.webhook import BaseMutationWebhook
+
+from {{ module }}.crd import {{ kind }}
+
+class {{ kind }}Mutation(BaseMutationWebhook[{{ kind }}]):
+
+    # Modify this class variable to register your
+    # webhook on this actions
+    register_on = ["CREATE", "UPDATE"]
+
+    def mutate(self, data: {{ kind }}) -> {{ kind }}:
+        """
+        TODO: Implement mutation logic
+        """

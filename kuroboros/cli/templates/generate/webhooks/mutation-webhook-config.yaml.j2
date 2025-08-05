@@ -3,26 +3,27 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: {{ name }}-mutation-webhook
 webhooks:
-{%- for gvi in gvis %}
-  - name: {{ gvi.crd_name }}-mutation-webhook
+{%- for wh in webhooks %}
+  - name: {{ wh.crd_name }}-mutation-webhook
     clientConfig:
       service:
         name: {{ name }}-webhook
         namespace: {{ name }}
-        path: /{{ gvi.api_version }}/{{ gvi.singular }}/mutate
+        path: /{{ wh.api_version }}/{{ wh.singular }}/mutate
       caBundle: {{ ca_bundle | default('""') }}
     rules:
       - apiGroups:
-          - {{ gvi.group }}
+          - {{ wh.group }}
         apiVersions:
-          - {{ gvi.api_version }}
+          - {{ wh.api_version }}
         operations:
-          - CREATE
-          - UPDATE
+        {%- for operation in wh.operations %}
+          - {{ operation }}
+        {%- endfor %}
         resources:
-          - {{ gvi.plural }}
-        scope: {{ gvi.scope }}
-    admissionReviewVersions: [ {{ gvi.api_version }} ]
+          - {{ wh.plural }}
+        scope: {{ wh.scope }}
+    admissionReviewVersions: [ {{ wh.api_version }} ]
     sideEffects: None
     failurePolicy: Fail
 {%- endfor %}
