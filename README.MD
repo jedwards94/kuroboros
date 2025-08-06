@@ -1,4 +1,5 @@
 # KUROBOROS
+(Currently only Namespaced) Kubernetes Operator Framework
 
 ## Index
 
@@ -460,7 +461,7 @@ Includes your config file as a ConfigMap with only the `[operator]` section.
 You can set a custom image in the config file:
 
 ```toml
-[generate.deployment.image]
+[image]
 registry = "my.registry.io"
 repository = "cache-operator"
 tag = "v0.0.1"
@@ -549,7 +550,7 @@ kuroboros new operator [NAME]
 
 #### `build`
 Builds the operator image using Docker.  
-Uses the `[generate.deployment.image]` config to tag the image.
+Uses the `[image]` config to tag the image.
 
 **Options:**
 - `--build-arg TEXT` Build arguments to pass to Docker **(format: key=val)**. Can be specified multiple times.
