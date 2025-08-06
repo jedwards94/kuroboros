@@ -1,4 +1,10 @@
-from kuroboros.schema import BaseCRD, prop
+from kuroboros.schema import BaseCRD, BaseCRDProp, prop
+
+########################
+Remember to run 
+`kuroboros generate crd`
+after modfying this file
+########################
 
 class {{ kind }}Status(BaseCRDProp):
     """

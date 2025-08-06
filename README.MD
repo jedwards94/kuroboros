@@ -1,5 +1,144 @@
 # KUROBOROS
 
+## Index
+
+- [Quickstart](#quickstart)
+- [Operator](#operator)
+- [Controller](#controller)
+  - [Controller Flow Chart](#controller-flow-chart)
+  - [Controller Sequence Diagram](#controller-sequence-diagram)
+- [Group Version Info (`group_version.py`)](#group-version-info-group_versionpy)
+- [Custom Resource Definition (`crd.py`)](#custom-resource-definition-crdpy)
+- [Reconciler (`reconciler.py`)](#reconciler-reconcilerpy)
+- [Admission Webhooks](#admission-webhooks)
+  - [Validation Webhook (`validation.py`)](#validation-webhook-validationpy)
+  - [Mutation Webhook (`mutation.py`)](#mutation-webhook-mutationpy)
+- [CLI](#cli)
+  - [Usage](#usage)
+  - [Commands](#commands)
+    - [`start`](#start)
+    - [`generate`](#generate)
+    - [`new`](#new)
+    - [`build`](#build)
+    - [`deploy OVERLAY`](#deploy-overlay)
+- [Metrics](#metrics)
+- [Config](#config)
+
+---
+
+## Quickstart
+
+### 1. Create a New Operator Project
+
+Start by creating a new directory for your operator and initializing the project:
+
+```sh
+mkdir cache-operator
+cd cache-operator
+kuroboros new operator cache-operator
+kuroboros new controller --kind Cache --api-version v1alpha1 --group kuroboros.io
+```
+
+This will generate the following structure:
+
+```sh
+cache-operator
+├── controllers
+│   ├── cache
+│   │   ├── group_version.py
+│   │   └── v1alpha1
+│   │       ├── crd.py
+│   │       └── reconciler.py
+│   └── __init__.py
+├── Dockerfile
+└── operator.toml
+```
+
+---
+
+### 2. Define CRD Spec and Status
+
+Edit `./controllers/cache/v1alpha1/crd.py` to define your CRD's specification and status.  
+After making changes, regenerate your CRD manifest:
+
+```sh
+kuroboros generate crd
+```
+
+**Example:**
+
+```python
+from kuroboros.schema import BaseCRD, BaseCRDProp, prop
+
+class CacheResourceObjects(BaseCRDProp):
+    cpu = prop(str)
+    memory = prop(str)
+
+class CacheResources(BaseCRDProp):
+    requests = prop(CacheResourceObjects)
+    limits = prop(CacheResourceObjects)
+
+class CacheStatus(BaseCRDProp):
+    current_size = prop(int)
+    phase = prop(str, enum=["Healthy", "Progressing"])
+
+class Cache(BaseCRD):
+    image_tag = prop(str, required=True, default="redis", enum=["redis"])
+    desired_size = prop(int, required=True, default=3, minimum=1, maximum=20)
+    resources = prop(CacheResources)
+    status = prop(CacheStatus)
+```
+
+---
+
+### 3. Implement Reconciliation Logic
+
+Define your reconciliation logic in `./controllers/cache/v1alpha1/reconciler.py`:
+
+```python
+from kuroboros.reconciler import BaseReconciler
+from controllers.cache.v1alpha1.crd import Cache
+from datetime import timedelta
+import threading
+
+class CacheReconciler(BaseReconciler[Cache]):
+    def reconcile(self, logger, obj: Cache, stopped: threading.Event):
+        # Implement your reconciliation logic here
+        obj.patch()  # Patch the CRD if changes were made
+        return timedelta(seconds=10)
+```
+
+---
+
+### 4. Build and Push Your Operator Image
+
+Build your operator Docker image:
+
+```sh
+kuroboros build
+```
+
+Push the image to your registry:
+
+```sh
+docker push <your-operator-image>:<your-tag>
+```
+
+---
+
+### 5. Generate and Deploy Kubernetes Manifests
+
+Generate all required Kubernetes manifests, create a Kustomize overlay, and deploy to your cluster:
+
+```sh
+kuroboros generate manifests
+kuroboros generate overlay local
+kuroboros deploy local
+```
+**Your operator is now ready to manage custom resources in your Kubernetes cluster. For advanced configuration and usage, refer to the documentation below.
+
+---
+
 ## Operator
 
 The `Operator` adds `Controllers` to watch over them and keeps track of the number of `Threads` that are running. It also runs and watches the webhook server in a Falcon app behind Gunicorn in a separate process.

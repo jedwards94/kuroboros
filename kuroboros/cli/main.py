@@ -371,7 +371,7 @@ def operator(name):
     conf = new_config(name)
     dockerfile = new_dockerfile()
 
-    create_file(".", "operator.conf", conf)
+    create_file(".", "operator.toml", conf)
     create_file(".", "Dockerfile", dockerfile)
     create_file("controllers", "__init__.py", "")
 

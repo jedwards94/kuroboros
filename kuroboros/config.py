@@ -21,7 +21,32 @@ class KuroborosConfig:
     Configuration class
     """
 
-    _config: Dict[str, Any] = {}
+    _config: Dict[str, Any] = {
+        "operator": {
+            "name": "kuroboros-operator",
+            "leader_acquire_interval_seconds": 10.0,
+            "log_level": "INFO",
+            "controllers": {
+                "cleanup_interval_seconds": 5.0,
+                "retry_backoff_seconds": 5.0,
+            },
+            "metrics": {
+                "interval_seconds": 5.0,
+                "port": 8080,
+            },
+            "webhook_server": {
+                "port": 443,
+                "cert_path": "/etc/tls/tls.crt",
+                "key_path": "/etc/tls/tls.key",
+            },
+        },
+        "image": {
+            "registry": "",
+            "repository": "kuroboros-operator",
+            "tag": "latest",
+        },
+        "generate": {"rbac": {"policies": []}},
+    }
 
     @classmethod
     def get(cls, *keys, typ: Type[T] = cast(Type[T], None)) -> T:
@@ -63,39 +88,15 @@ class KuroborosConfig:
         Loads a TOML file as the config for the operator
         """
         toml_config = None
+        try:
+            with open(path, "r", encoding="utf-8") as config_file:
+                content = config_file.read()
+                toml_config = tomlkit.loads(content)
 
-        with open(path, "r", encoding="utf-8") as config_file:
-            content = config_file.read()
-            toml_config = tomlkit.loads(content)
-
-        if toml_config is not None:
-            default_config = {
-                "operator": {
-                    "name": "kuroboros-operator",
-                    "leader_acquire_interval_seconds": 10.0,
-                    "log_level": "INFO",
-                    "controllers": {
-                        "cleanup_interval_seconds": 5.0,
-                        "retry_backoff_seconds": 5.0,
-                    },
-                    "metrics": {
-                        "interval_seconds": 5.0,
-                        "port": 8080,
-                    },
-                    "webhook_server": {
-                        "port": 443,
-                        "cert_path": "/etc/tls/tls.crt",
-                        "key_path": "/etc/tls/tls.key",
-                    },
-                },
-                "image": {
-                    "registry": "",
-                    "repository": "kuroboros-operator",
-                    "tag": "latest",
-                },
-                "generate": {"rbac": {"policies": []}},
-            }
-            cls._config = cls._merge(default_config, toml_config)
+            if toml_config is not None:
+                cls._config = cls._merge(cls._config, toml_config)
+        except FileNotFoundError:
+            return
 
     @classmethod
     def dumps(cls, key: str) -> str:
