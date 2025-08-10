@@ -1,4 +1,11 @@
-from typing import ClassVar, Generic, Tuple, Type, TypeVar, get_args, get_origin
+from typing import (
+    ClassVar,
+    Generic,
+    Type,
+    TypeVar,
+    get_args,
+    get_origin,
+)
 import threading
 from datetime import timedelta
 from logging import Logger
@@ -9,7 +16,7 @@ from kuroboros.exceptions import RetriableException, UnrecoverableException
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.logger import root_logger, reconciler_logger
 from kuroboros.schema import BaseCRD
-from kuroboros.utils import event_aware_sleep, with_timeout
+from kuroboros.utils import NamespaceName, event_aware_sleep, with_timeout
 
 T = TypeVar("T", bound=BaseCRD)
 
@@ -25,7 +32,7 @@ class BaseReconciler(Generic[T]):
     _stop: threading.Event
     _running: bool
     _loop_thread: threading.Thread
-    _namespace_name: Tuple[str, str]
+    _namespace_name: NamespaceName
 
     reconcile_timeout: timedelta | None = None
     timeout_retry: bool = False
@@ -62,12 +69,14 @@ class BaseReconciler(Generic[T]):
         """
         cls.__group_version_info = gvi
 
-    def __init__(self, namespace_name: Tuple[str, str]):
+    def __init__(self, namespace_name: NamespaceName):
         self.api = client.CustomObjectsApi()
         self._stop = threading.Event()
         self._running = False
         pretty_version = self.__group_version_info.pretty_version_str()
-        self.name = f"{caseconverter.pascalcase(self.__class__.__name__)}{pretty_version}"
+        self.name = (
+            f"{caseconverter.pascalcase(self.__class__.__name__)}{pretty_version}"
+        )
         self._logger = self._logger.getChild(self.name)
         self._namespace_name = namespace_name
 
@@ -75,6 +84,26 @@ class BaseReconciler(Generic[T]):
         if self._namespace_name is not None:
             return f"{self.name}(Namespace={self._namespace_name[0]}, Name={self._namespace_name[1]})"
         return f"{self.name}"
+
+    def _load_latest(self, crd: T) -> None:
+        namespaced = self.__group_version_info.is_namespaced()
+        getter = None
+        args = {
+            "group": self.__group_version_info.group,
+            "version": self.__group_version_info.api_version,
+            "name": self._namespace_name[1],
+            "plural": self.__group_version_info.plural,
+        }
+
+        if namespaced:
+            assert self._namespace_name[0] is not None
+            args["namespace"] = self._namespace_name[0]
+            getter = self.api.get_namespaced_custom_object
+        else:
+            getter = self.api.get_cluster_custom_object
+
+        latest = getter(**args)
+        crd.load_data(latest)
 
     def reconcilation_loop(self):
         """
@@ -85,14 +114,7 @@ class BaseReconciler(Generic[T]):
         crd_inst = self.crd_type()(api=self.api)
         while not self._stop.is_set():
             try:
-                latest = self.api.get_namespaced_custom_object(
-                    group=self.__group_version_info.group,
-                    version=self.__group_version_info.api_version,
-                    namespace=self._namespace_name[0],
-                    name=self._namespace_name[1],
-                    plural=self.__group_version_info.plural,
-                )
-                crd_inst.load_data(latest)
+                self._load_latest(crd_inst)
                 inst_logger, filt = reconciler_logger(
                     self.__group_version_info, crd_inst
                 )
@@ -115,9 +137,7 @@ class BaseReconciler(Generic[T]):
             except client.ApiException as e:
                 if e.status == 404:
                     self._logger.info(e)
-                    self._logger.info(
-                        "%s no longer found, killing thread", crd_inst
-                    )
+                    self._logger.info("%s no longer found, killing thread", crd_inst)
                 else:
                     self._logger.fatal(
                         "A `APIException` ocurred while proccessing %s: %s",

@@ -18,6 +18,7 @@ def crd_schema(
     Generates the `CustomResourceDefinition` for the inherited `BaseCRD` class
     """
     version_props = {}
+    version_desc = ""
     for version in versions:
         crd = versions[version]
         props = {}
@@ -37,10 +38,12 @@ def crd_schema(
         if status.typ != "object":
             raise TypeError("status can only be a `dict` type object")
 
+        if crd.__doc__ is not None:
+            version_desc = crd.__doc__.strip()
         version_props[version] = {"props": props, "status": status}
 
     crd_template = temps.env.get_template("generate/crd/crd.yaml.j2")
-    return crd_template.render(gvi=group_version_info, version_props=version_props)
+    return crd_template.render(gvi=group_version_info, version_props=version_props, version_desc=version_desc)
 
 
 def rbac_sa() -> str:

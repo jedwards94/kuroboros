@@ -10,7 +10,7 @@ from kuroboros.config import KuroborosConfig
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
 from kuroboros.schema import BaseCRD
-from kuroboros.utils import event_aware_sleep
+from kuroboros.utils import NamespaceName, event_aware_sleep
 from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook
 
 
@@ -92,13 +92,14 @@ class Controller:
 
     _cleanup_interval: float
     _logger: Logger = logger.root_logger.getChild(__name__)
-    _members: MutableMapping[Tuple[str, str], BaseReconciler]
-    _pending_remove: List[Tuple[str, str]]
+    _members: MutableMapping[NamespaceName, BaseReconciler]
+    _pending_remove: List[NamespaceName]
     _group_version_info: GroupVersionInfo
     _stop: threading.Event
     _watcher: watch.Watch
     _watcher_loop: threading.Thread
     _cleanup_loop: threading.Thread
+    _api: client.CustomObjectsApi
 
     reconciler: Type[BaseReconciler]
     validation_webhook: BaseValidationWebhook | None
@@ -136,9 +137,10 @@ class Controller:
         self._group_version_info = group_version_info
         self.name = f"{caseconverter.pascalcase(name)}{group_version_info.pretty_version_str()}Controller"
         self._logger = self._logger.getChild(self.name)
+        self._check_permissions()
         self.reconciler = reconciler
         self.reconciler.api = client.CustomObjectsApi()
-        self._check_permissions()
+        self._api = client.CustomObjectsApi()
         self._members = {}
         self._pending_remove = []
         self.validation_webhook = (
@@ -176,7 +178,7 @@ class Controller:
                     f"operator doesn't have {verb} permission over the CRD {crd_name}"
                 )
 
-    def _add_member(self, namespace_name: Tuple[str, str]):
+    def _add_member(self, namespace_name: NamespaceName):
         """
         Adds the object to be managed and starts its `_reconcile` function
         in a thread
@@ -194,7 +196,7 @@ class Controller:
                 return
             self._members[namespace_name].start()
 
-    def _add_pending_remove(self, namespace_name: Tuple[str, str]):
+    def _add_pending_remove(self, namespace_name: NamespaceName):
         """
         Adds the object to be safely removed from the management list
         """
@@ -206,7 +208,7 @@ class Controller:
             self._group_version_info.pretty_kind_str(namespace_name),
         )
 
-    def _remove_member(self, namespace_name: Tuple[str, str]):
+    def _remove_member(self, namespace_name: NamespaceName):
         """
         Sends an stop event to the member thread and stops the loop
         """
@@ -256,7 +258,7 @@ class Controller:
             current_crs = self._get_current_cr_list(api)
             for pending in current_crs:
                 crd_namespace_name = (
-                    pending["metadata"]["namespace"],
+                    pending["metadata"].get("namespace", None),
                     pending["metadata"]["name"],
                 )
                 self._add_member(crd_namespace_name)
@@ -283,7 +285,6 @@ class Controller:
             "watching %s CRs pending to remove",
             self._group_version_info.pretty_kind_str(),
         )
-        api = client.CustomObjectsApi()
         while not self._stop.is_set():
             for namespace, name in self._pending_remove:
                 self._logger.info(
@@ -291,31 +292,22 @@ class Controller:
                     len(self._pending_remove),
                     self._group_version_info.pretty_kind_str(),
                 )
+
                 try:
-                    api.get_namespaced_custom_object_with_http_info(
-                        group=self._group_version_info.group,
-                        version=self._group_version_info.api_version,
-                        plural=self._group_version_info.plural,
-                        name=name,
-                        namespace=namespace,
-                    )
-                except client.ApiException as e:
-                    if e.status == 404:
+                    if not self._cr_exists(name, namespace):
                         self._remove_member((namespace, name))
                         self._pending_remove.remove((namespace, name))
                         self._logger.info(
                             "%s CR no longer found, removed",
                             self._group_version_info.pretty_kind_str((namespace, name)),
                         )
-                    else:
-                        self._logger.error(
-                            "unexpected api error ocurred while watching pending_remove %s CR: %s",
-                            self._group_version_info.pretty_kind_str((namespace, name)),
-                            e,
-                            exc_info=True,
-                        )
-                        raise e
-
+                except client.ApiException as e:
+                    self._logger.error(
+                        "unexpected api error ocurred while watching pending_remove %s CR: %s",
+                        self._group_version_info.pretty_kind_str((namespace, name)),
+                        e,
+                        exc_info=True,
+                    )
             event_aware_sleep(self._stop, self._cleanup_interval)
 
     def _watch_cr_events(self):
@@ -341,7 +333,7 @@ class Controller:
                     raw_cr = event["object"]
                     metadata: Dict[str, Any] = raw_cr["metadata"]
                     namespace_name = (
-                        metadata.get("namespace", "default"),
+                        metadata.get("namespace", None),
                         metadata["name"],
                     )
                     finalizers = metadata.get("finalizers")
@@ -377,6 +369,30 @@ class Controller:
                 self._group_version_info.pretty_kind_str(),
             )
             self._watcher.stop()
+
+    def _cr_exists(self, name: str, namespace: str | None = None) -> bool:
+        namespaced = self._group_version_info.is_namespaced()
+        getter = None
+        args = {
+            "group": self._group_version_info.group,
+            "version": self._group_version_info.api_version,
+            "plural": self._group_version_info.plural,
+            "name": name,
+        }
+        if namespaced:
+            assert namespace is not None
+            args["namespace"] = namespace
+            getter = self._api.get_namespaced_custom_object_with_http_info
+        else:
+            getter = self._api.get_cluster_custom_object_with_http_info
+        try:
+            result = getter(**args)
+            print(result)
+        except client.ApiException as e:
+            if e.status == 404:
+                return False
+            raise e
+        return True
 
     def run(self) -> Tuple[threading.Thread, threading.Thread]:
         """

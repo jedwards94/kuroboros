@@ -1,7 +1,9 @@
 import re
-from typing import Tuple, cast
+from typing import cast
 
 import inflect
+
+from kuroboros.utils import NamespaceName
 
 
 class GroupVersionInfo:
@@ -23,7 +25,7 @@ class GroupVersionInfo:
     plural: str
     crd_name: str
     short_names: list[str]
-    scope: str = "Namespaced"
+    scope: str
 
     @staticmethod
     def is_valid_api_version(api_version: str) -> bool:
@@ -31,8 +33,12 @@ class GroupVersionInfo:
         Validates if the given API version string matches the expected format.
         """
         return re.match(GroupVersionInfo.__VERSION_PATTERN, api_version) is not None
+    
+    
+    def is_namespaced(self):
+        return self.scope == "Namespaced"
 
-    def pretty_kind_str(self, namespace_name: Tuple[str, str] | None = None) -> str:
+    def pretty_kind_str(self, namespace_name: NamespaceName | None = None) -> str:
         """
         Return a string to represent the CRD as `MyCRDV1Stable` or
         `MyCRD(Namespace="string", Name="string")` if available
@@ -53,10 +59,14 @@ class GroupVersionInfo:
 
         return f"V{major}{stability}{minor}"
 
-    def __init__(self, api_version: str, group: str, kind: str, **kwargs):
+    def __init__(self, api_version: str, group: str, kind: str, scope: str = "Namespaced", **kwargs):
         inf = inflect.engine()
         self.api_version = api_version
         self.group = group
+        self.scope = scope
+        
+        if self.scope not in ("Namespaced", "Cluster"):
+            raise ValueError("scope must be one of `Namespaced` or `CLuster`")
 
         match = re.match(self.__VERSION_PATTERN, self.api_version)
         if not match:

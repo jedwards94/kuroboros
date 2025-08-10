@@ -1,5 +1,5 @@
 # KUROBOROS
-(Currently only Namespaced) Kubernetes Operator Framework
+Kubernetes Operator Framework
 
 ## Index
 
@@ -10,6 +10,8 @@
   - [Controller Sequence Diagram](#controller-sequence-diagram)
 - [Group Version Info (`group_version.py`)](#group-version-info-group_versionpy)
 - [Custom Resource Definition (`crd.py`)](#custom-resource-definition-crdpy)
+  - [CRD Properties](#crd-properties)
+  - [Built-in Methods and Properties](#built-in-methods-and-properties)
 - [Reconciler (`reconciler.py`)](#reconciler-reconcilerpy)
 - [Admission Webhooks](#admission-webhooks)
   - [Validation Webhook (`validation.py`)](#validation-webhook-validationpy)
@@ -136,7 +138,7 @@ kuroboros generate manifests
 kuroboros generate overlay local
 kuroboros deploy local
 ```
-**Your operator is now ready to manage custom resources in your Kubernetes cluster. For advanced configuration and usage, refer to the documentation below.
+**Your operator is now ready to manage custom resources in your Kubernetes cluster. For advanced configuration and usage, refer to the documentation below.**
 
 ---
 
@@ -301,11 +303,95 @@ class Cache(BaseCRD):
     })
 ```
 
+### Built-in Methods and Properties
+
+The following methods and properties are available on all CRD classes inheriting from `BaseCRD`:
+
+#### `patch(patch_status: bool = True) -> None`
+Updates the Custom Resource (CR) instance in the cluster with the current spec. If `patch_status` is `True`, the status is also patched.
+
 ---
+
+#### `add_finalizer(finalizer: str) -> None`
+Adds a finalizer to the CR instance (`metadata["finalizers"]`) and patches the resource in the cluster.
+
+---
+
+#### `remove_finalizer(finalizer: str) -> None`
+Removes a finalizer from the CR instance (`metadata["finalizers"]`) and patches the resource in the cluster.
+
+---
+
+#### `get_owner_ref(block_self_deletion: bool = True) -> V1OwnerReference`
+Retrieves the current Kubernetes `V1OwnerReference` for the CR instance.
+
+---
+
+#### `get_data() -> Dict[str, Any]`
+Returns a dictionary containing the `spec`, `status`, and `metadata` of the CR instance.
+
+---
+
+#### `create_namespaced(api: CustomObjectsApi, namespace: str, name: str, spec: Dict, metadata: Dict | None = None)` (`@classmethod`)
+Creates a namespaced CR with the specified `name` and `spec` in the given `namespace`. Fails if CR is not Namespaced
+
+---
+#### `create_cluster_scoped(api: CustomObjectsApi, name: str, spec: Dict, metadata: Dict | None = None)` (`@classmethod`)
+Creates a namespaced CR with the specified `name` and `spec` in the cluster. Fails if the CR is not Cluster-scoped
+
+---
+
+#### `get_namespaced(api: CustomObjectsApi, namespace: str, name: str)` (`@classmethod`)
+Retrieves a namespaced CR with the specified `name` from the given `namespace`. Fails if CR is not Namespaced
+
+---
+
+#### `get_cluster_scoped(api: CustomObjectsApi, name: str)` (`@classmethod`)
+Retrieves a namespaced CR with the specified `name` from the cluster. Fails if the CR is not Cluster-scoped
+
+---
+
+#### `list_namespaced(api: CustomObjectsApi, namespace: str, **kwargs)` (`@classmethod`)
+Lists all CRs in the specified `namespace` matching the provided criteria. Additional parameters are passed to `CustomObjectsApi.list_namespaced_custom_object`. Fails if CR is not Namespaced
+
+---
+
+#### `list_cluster_scoped(api: CustomObjectsApi, **kwargs)` (`@classmethod`)
+Lists all CRs in the cluster matching the provided criteria. Additional parameters are passed to `CustomObjectsApi.list_cluster_custom_object`. Fails if CR is not Cluster-scoped
+
+---
+
+#### `marked_for_deletion: bool` (`@property`)
+Returns `True` if the CR instance has a `deletionTimestamp` in its metadata, otherwise `False`.
+
+---
+
+#### `finalizers: List[str]` (`@property`)
+Returns the list of finalizers from the CR instance's metadata, or an empty list if none are defined.
+
+---
+
+#### `uid: str` (`@property`)
+Returns the unique identifier (`uid`) of the CR instance.
+
+---
+
+#### `namespace_name: Tuple[str, str]` (`@property`)
+Returns a tuple containing the namespace and name of the CR instance.
+
+---
+
+#### `resource_version: str` (`@property`)
+Returns the `resourceVersion` of the CR instance.
+
 
 ## Reconciler (`reconciler.py`)
 
 The `Reconciler` is where you implement the method `reconcile`. The `Controller` will create a `Reconciler` for every member to run its loop in a separate `Thread`, so creating in-memory dictionaries and variables in the `BaseReconciler` class as class variables should be done with concurrency in mind. Every `Reconciler` **must** be a class inherited from `BaseReconciler` and be located in `reconciler.py`, otherwise the CLI won't recognize the class.
+
+### Key considerations
+- Returning a `datetime.timedelta` schedules a requeue after the specified duration.
+- Returning `None` (or omitting a return value) terminates reconciliation until subsequent resource updates.
 
 #### Example
 
@@ -319,8 +405,8 @@ import threading
 class CacheReconciler(BaseReconciler[Cache]):
     def reconcile(self, logger, obj: Cache, stopped: threading.Event):
         if some_condition:
-            return timedelta(seconds=5)
-        return
+            return timedelta(seconds=5) # The `reconcile` function will run again in 5 seconds
+        return # the reconciliation loop stops
 ```
 
 ---

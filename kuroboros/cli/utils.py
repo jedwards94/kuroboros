@@ -30,6 +30,8 @@ def yaml_format(value):
             float(value)
             return f'"{value}"'  # Quote numeric-looking strings
         except ValueError:
+            if "\n" in value:
+                return f"|\n    {value}"
             # Quote strings with colons, spaces, etc.
             if any(c in value for c in ":[]{}, "):
                 return f'"{value}"'
@@ -60,13 +62,17 @@ def create_file(
         click.echo(f"not overwriten: {file_name}.")
         return
     try:
+        action = ""
+        if p.is_file():
+            action = "overwriten"
+        else:
+            action = "created"
         with open(f"{output}/{file_name}", "w", encoding="utf-8") as file:
             file.write(data)
             file.close()
-        if p.is_file():
-            click.echo(f"overwriten: {file_name}")
-        else:
-            click.echo(f"created: {file_name}")
+
+        click.echo(f"{action}: {file_name}")
+
     except Exception as e:
         click.echo(f"error while craeting file {output}")
         raise e

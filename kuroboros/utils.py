@@ -2,9 +2,10 @@ import concurrent
 import concurrent.futures
 import threading
 import time
-from typing import Callable, ParamSpec, TypeVar
+from typing import Callable, ParamSpec, Tuple, TypeVar
 
 
+NamespaceName = Tuple[str | None, str]
 
 def event_aware_sleep(event: threading.Event, timeout: float):
     """

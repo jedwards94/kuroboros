@@ -139,7 +139,7 @@ class TestInit(unittest.TestCase):
 
         inst_1.nested_test_field.test_sub_field.test_sub_field = "test"
         inst_2.nested_test_field.test_sub_field.test_sub_field = "test"
-        self.assertEquals(
+        self.assertEqual(
             inst_1.get_data()["spec"]["nestedTestField"]["testSubField"][
                 "testSubField"
             ],
@@ -157,7 +157,7 @@ class TestInstance(unittest.TestCase):
 
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {"test_field": "testing string"},
+            "spec": {"testField": "testing string"},
             "status": {"some": "thing"},
         }
 
@@ -189,6 +189,23 @@ class TestInstance(unittest.TestCase):
         patch_cr_status_mock.assert_called_once()
         self.assertEqual(patch_cr_mock.call_count, 2)
 
+
+    def test_read_only(self):
+        data = {
+            "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
+            "spec": {"testField": "testing string"},
+            "status": {"some": "thing"},
+        }
+        inst = TestCrd(api=client.CustomObjectsApi(), read_only=True, data=data)
+        
+        with self.assertRaises(RuntimeError):
+            inst.test_field = "something new"
+        
+        with self.assertRaises(RuntimeError):
+            inst.read_only = False
+        
+        self.assertEqual(inst.test_field, "testing string")
+        
 
     def test_helpers(self):
         data = {

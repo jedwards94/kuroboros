@@ -1,3 +1,4 @@
+from threading import Thread
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -30,19 +31,18 @@ class DummyCRD(BaseCRD):
     @property
     def finalizers(self):
         return self._finalizers
-    
+
     @property
     def name(self):
         return self._namespace_name[1]
-    
+
     @property
     def namemespace(self):
         return self._namespace_name[0]
-    
+
     @property
     def resource_version(self):
         return "123"
-        
 
     def __init__(self, api=None, group_version=None):
         self._namespace_name = ("default", "dummy")
@@ -82,9 +82,6 @@ FailDummyCRD.set_gvi(group_version_info())
 FailDummyWebhookValidation.set_gvi(group_version_info())
 
 
-
-
-
 def make_controller():
     with patch("kuroboros.controller.Controller._check_permissions"):
         return Controller("DummyController", group_version_info(), DummyReconciler)
@@ -101,7 +98,10 @@ class TestController(unittest.TestCase):
     def test_controller_webhook_reconciler_equals_crd_cls(self):
         with patch("kuroboros.controller.Controller._check_permissions"):
             ctrl = Controller(
-                "DummyController", group_version_info(), DummyReconciler, DummyWebhookValidation
+                "DummyController",
+                group_version_info(),
+                DummyReconciler,
+                DummyWebhookValidation,
             )
             self.assertIsInstance(ctrl, Controller)
 
@@ -121,7 +121,7 @@ class TestController(unittest.TestCase):
         self.assertFalse(reconciler._stop.is_set())
 
     def test_add_member_duplicate(self):
-        
+
         self.controller._add_member(("default", "dummy"))
         before = len(self.controller._members)
         self.controller._add_member(("default", "dummy"))
@@ -220,19 +220,19 @@ class TestController(unittest.TestCase):
                 self.assertEqual(remove_member.call_count, 1)
 
     def test_watch_pending_remove_removes_when_404(self):
-        api = MagicMock()
-        api.get_namespaced_custom_object_with_http_info.side_effect = (
-            client.ApiException(status=404, reason="Not Found")
-        )
         self.controller._pending_remove = [("default", "dummy")]
-        with patch("kuroboros.controller.client.CustomObjectsApi", return_value=api):
-            with patch.object(
-                self.controller, "_remove_member"
-            ) as remove_member, patch("time.sleep", side_effect=Exception("break")):
-                try:
-                    self.controller._watch_pending_remove()
-                except Exception:
-                    pass
+        # Patch the _api attribute/property on the instance
+        with patch.object(
+            self.controller._api,
+            "get_namespaced_custom_object_with_http_info",
+            side_effect=client.ApiException(status=404, reason="Not Found"),
+        ):
+            with patch.object(self.controller, "_remove_member") as remove_member:
+                thread = Thread(target=self.controller._watch_pending_remove)
+                thread.start()
+                self.controller._stop.set()
+                while thread.is_alive():
+                    time.sleep(0.1)
                 remove_member.assert_called_with(("default", "dummy"))
 
     def test_check_permissions_allows(self):

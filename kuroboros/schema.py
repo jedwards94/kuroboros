@@ -1,9 +1,9 @@
 import copy
+from inspect import isclass
 from typing import (
     Any,
     ClassVar,
     List,
-    Tuple,
     Dict,
     Type,
     TypeVar,
@@ -17,6 +17,7 @@ from kubernetes import client
 from kubernetes.client import V1OwnerReference
 
 from kuroboros.group_version_info import GroupVersionInfo
+from kuroboros.utils import NamespaceName
 
 
 class CRDProp:
@@ -61,7 +62,7 @@ class BaseCRDProp:
         self._parent_key = _parent_key
         # ALWAYS set _parent_data at the end of __init__ to avoid recursion
         self._parent_data = _parent_data
-        
+
     def __init_subclass__(cls) -> None:
         for attribute, value in cls.__dict__.items():
             if (
@@ -74,8 +75,7 @@ class BaseCRDProp:
     @staticmethod
     def __case_function(text: str) -> str:
         return caseconverter.camelcase(text)
-    
-    
+
     @classmethod
     def attr_name(cls, text: str) -> str:
         """
@@ -152,13 +152,15 @@ def prop(
         list[bool]: "array",
     }
     t = type_map.get(typ, None)
-    if issubclass(typ, BaseCRDProp):
+    if isclass(typ) and issubclass(typ, BaseCRDProp):
         if properties is not None:
             raise RuntimeError(
                 "a prop of a type inherited from BaseCRDProp cannot have properties defined in it"
             )
         t = "object"
         properties = typ.to_prop_dict()
+        if typ.__doc__ is not None:
+            kwargs["description"] = typ.__doc__.strip()
     if t is None:
         supported_types = "`, `".join([k.__name__ for k in type_map])
         raise TypeError(
@@ -213,7 +215,7 @@ class BaseCRD:
         Sets the GroupVersionInfo of the class
         """
         cls.__group_version = gvi
-        
+
     @classmethod
     def attr_name(cls, text: str) -> str:
         """
@@ -221,6 +223,46 @@ class BaseCRD:
         """
 
         return copy.copy(cls.__attr_map[text])
+
+    @classmethod
+    def create_cluster_scoped(
+        cls: Type[T],
+        api: client.CustomObjectsApi,
+        name: str,
+        spec: Dict,
+        metadata: Dict | None = None,
+    ) -> T:
+        """
+        Creates a new instance of the CRD in the cluster.
+        """
+        if cls.__group_version is None:
+            raise RuntimeError(
+                "`create_cluster_scoped` used when group_version is `None`"
+            )
+        if cls.__group_version.is_namespaced():
+            raise RuntimeError("`create_cluster_scoped` used in a namespaced CRD")
+        if metadata is None:
+            metadata = {}
+        metadata["name"] = name
+        data = {
+            "metadata": metadata,
+            "spec": spec,
+        }
+        instance = cls(api=api, read_only=False, data=data)
+
+        instance = cls(api=api, read_only=False, data=data)
+        cluster_data = api.create_cluster_custom_object(
+            group=cls.__group_version.group,
+            version=cls.__group_version.api_version,
+            plural=cls.__group_version.plural,
+            body={
+                "kind": cls.__group_version.kind,
+                "apiVersion": f"{cls.__group_version.group}/{cls.__group_version.api_version}",
+                **instance.get_data(),
+            },
+        )
+        instance.load_data(cluster_data)
+        return instance
 
     @classmethod
     def create_namespaced(
@@ -235,7 +277,9 @@ class BaseCRD:
         Creates a new instance of the CRD in the specified namespace.
         """
         if cls.__group_version is None:
-            raise RuntimeError("`patch` used when group_version is `None`")
+            raise RuntimeError("`create_namespaced` used when group_version is `None`")
+        if not cls.__group_version.is_namespaced():
+            raise RuntimeError("`create_namespaced` used in a cluster-scoped CRD")
         if metadata is None:
             metadata = {}
         metadata["name"] = name
@@ -259,6 +303,29 @@ class BaseCRD:
         return instance
 
     @classmethod
+    def get_cluster_scoped(
+        cls: Type[T],
+        api: client.CustomObjectsApi,
+        name: str,
+    ) -> T:
+        """
+        Get a CRD with name from the cluster
+        """
+        if cls.__group_version is None:
+            raise RuntimeError("`get_cluster_scoped` used when group_version is `None`")
+        if cls.__group_version.is_namespaced():
+            raise RuntimeError("`get_cluster_scoped` used in a namespaced CRD")
+        response = api.get_cluster_custom_object(
+            group=cls.__group_version.group,
+            name=name,
+            version=cls.__group_version.api_version,
+            plural=cls.__group_version.plural,
+        )
+        instance = cls(api=api, read_only=False)
+        instance.load_data(response)
+        return instance
+
+    @classmethod
     def get_namespaced(
         cls: Type[T],
         api: client.CustomObjectsApi,
@@ -269,7 +336,9 @@ class BaseCRD:
         Get a CRD with name and namespace from the cluster
         """
         if cls.__group_version is None:
-            raise RuntimeError("`patch` used when group_version is `None`")
+            raise RuntimeError("`get_namespaced` used when group_version is `None`")
+        if not cls.__group_version.is_namespaced():
+            raise RuntimeError("`get_namespaced` used in a cluster-scoped CRD")
         response = api.get_namespaced_custom_object(
             group=cls.__group_version.group,
             namespace=namespace,
@@ -289,14 +358,49 @@ class BaseCRD:
         **kwargs,
     ) -> List[T]:
         """
-        Get a CRD List with name and namespace from the cluster
+        Get a CRD List from the cluster
         """
         if cls.__group_version is None:
-            raise RuntimeError("`patch` used when group_version is `None`")
+            raise RuntimeError("`list_namespaced` used when group_version is `None`")
+
+        if not cls.__group_version.is_namespaced():
+            raise RuntimeError("`list_namespaced` used in a cluster-scoped CRD")
+
         instances = []
         response = api.list_namespaced_custom_object(
             group=cls.__group_version.group,
             namespace=namespace,
+            version=cls.__group_version.api_version,
+            plural=cls.__group_version.plural,
+            **kwargs,
+        )
+        for raw in response:
+            inst = cls(api=api, read_only=False)
+            inst.load_data(raw)
+            instances.append(inst)
+
+        return instances
+
+    @classmethod
+    def list_cluster_scoped(
+        cls: Type[T],
+        api: client.CustomObjectsApi,
+        **kwargs,
+    ) -> List[T]:
+        """
+        Get a CRD List from the cluster
+        """
+        if cls.__group_version is None:
+            raise RuntimeError(
+                "`list_cluster_scoped` used when group_version is `None`"
+            )
+
+        if cls.__group_version.is_namespaced():
+            raise RuntimeError("`list_cluster_scoped` used in a namespaced CRD")
+
+        instances = []
+        response = api.list_cluster_custom_object(
+            group=cls.__group_version.group,
             version=cls.__group_version.api_version,
             plural=cls.__group_version.plural,
             **kwargs,
@@ -335,7 +439,6 @@ class BaseCRD:
         if self.__group_version is not None:
             return f"{self.__group_version.pretty_kind_str(self.namespace_name)}"
         return super().__repr__()
-
 
     def load_data(self, data: Any):
         """
@@ -378,29 +481,34 @@ class BaseCRD:
             raise RuntimeError(f"Cannot call `patch` on read-only CRD object `{self}`")
 
         new_state = self.get_data()
-        if self.__group_version.scope == "Namespaced":
-            if "status" in self._data and patch_status:
-                response = self.api.patch_namespaced_custom_object_status(
-                    group=self.__group_version.group,
-                    namespace=self.metadata["namespace"],
-                    name=self.metadata["name"],
-                    version=self.__group_version.api_version,
-                    plural=self.__group_version.plural,
-                    body={"status": self._data["status"]},
-                )
+        patcher = None
+        if self.__group_version.is_namespaced():
+            patcher = self.api.patch_namespaced_custom_object_status
+        else:
+            patcher = self.api.patch_cluster_custom_object_status
 
-                self.load_data(response)
-
-            response = self.api.patch_namespaced_custom_object(
+        assert patcher is not None
+        if "status" in self._data and patch_status:
+            response = patcher(
                 group=self.__group_version.group,
                 namespace=self.metadata["namespace"],
                 name=self.metadata["name"],
                 version=self.__group_version.api_version,
                 plural=self.__group_version.plural,
-                body=new_state,
+                body={"status": self._data["status"]},
             )
-
             self.load_data(response)
+
+        response = patcher(
+            group=self.__group_version.group,
+            namespace=self.metadata["namespace"],
+            name=self.metadata["name"],
+            version=self.__group_version.api_version,
+            plural=self.__group_version.plural,
+            body=new_state,
+        )
+
+        self.load_data(response)
 
     def __getattribute__(self, name: str):
         attr = object.__getattribute__(self, name)
@@ -500,11 +608,12 @@ class BaseCRD:
         """
         Gets the metadata of the resource as a `Dict`
         """
-        if "metadata" not in self._data.keys():
+        data = object.__getattribute__(self, "_data")
+        if "metadata" not in data.keys():
             raise RuntimeError(
-                f"method called at wrong time, no metadata present at {self}"
+                f"method called at wrong time, no metadata present at {self.__class__.__name__}"
             )
-        return self._data["metadata"]
+        return data["metadata"]
 
     @metadata.setter
     def metadata(self, value):
@@ -521,12 +630,12 @@ class BaseCRD:
         return self.metadata["name"]
 
     @property
-    def namespace(self) -> str:
+    def namespace(self) -> str | None:
         """
         Quick access to `metadata["namespace"]`
         """
 
-        return self.metadata["namespace"]
+        return self.metadata.get("namespace", None)
 
     @property
     def marked_for_deletion(self) -> bool:
@@ -554,11 +663,11 @@ class BaseCRD:
         return self.metadata["uid"]
 
     @property
-    def namespace_name(self) -> Tuple[str, str]:
+    def namespace_name(self) -> NamespaceName:
         """
         Returns a tuple of `(namespace, name)` of the resource
         """
-        return (self.metadata["namespace"], self.metadata["name"])
+        return (self.namespace, self.name)
 
     @property
     def resource_version(self) -> str | None:
