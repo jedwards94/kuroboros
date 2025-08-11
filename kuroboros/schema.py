@@ -7,6 +7,7 @@ from typing import (
     Dict,
     Type,
     TypeVar,
+    Tuple,
     cast,
     get_args,
     get_origin,
@@ -194,10 +195,10 @@ class BaseCRD:
     Defines the CRD class for your Reconciler and Webhooks
     """
 
-    status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
+    status: Any
+    print_columns: Dict[str, Tuple[str, str]]
 
-    # instance properties
-    __attr_map: Dict[str, str] = {}
+    __attr_map: ClassVar[Dict[str, str]] = {}
     __group_version: ClassVar[GroupVersionInfo | None]
     api: client.CustomObjectsApi | None
     read_only: bool
@@ -413,6 +414,15 @@ class BaseCRD:
         return instances
 
     def __init_subclass__(cls) -> None:
+
+        if "status" not in cls.__dict__:
+            cls.status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
+        elif not isinstance(cls.status, CRDProp):
+            raise RuntimeError("status must by a prop().")
+
+        if "print_columns" not in cls.__dict__:
+            cls.print_columns = {}
+
         for attribute, value in cls.__dict__.items():
             if (
                 attribute[:2] != "__"

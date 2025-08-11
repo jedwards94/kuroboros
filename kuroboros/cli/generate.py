@@ -17,8 +17,9 @@ def crd_schema(
     """
     Generates the `CustomResourceDefinition` for the inherited `BaseCRD` class
     """
+    version_print_columns = {}
     version_props = {}
-    version_desc = ""
+    version_desc = {}
     for version in versions:
         crd = versions[version]
         props = {}
@@ -38,12 +39,22 @@ def crd_schema(
         if status.typ != "object":
             raise TypeError("status can only be a `dict` type object")
 
+        print_columns: List[Dict] = []
+        for name, (path, typ) in crd.print_columns.items():
+            print_columns.append({"json_path": path, "name": name, "type": typ})
+        if len(print_columns) > 0:
+            version_print_columns[version] = print_columns
         if crd.__doc__ is not None:
-            version_desc = crd.__doc__.strip()
+            version_desc[version] = crd.__doc__.strip()
         version_props[version] = {"props": props, "status": status}
 
     crd_template = temps.env.get_template("generate/crd/crd.yaml.j2")
-    return crd_template.render(gvi=group_version_info, version_props=version_props, version_desc=version_desc)
+    return crd_template.render(
+        gvi=group_version_info,
+        version_props=version_props,
+        version_desc=version_desc,
+        version_print_columns=version_print_columns,
+    )
 
 
 def rbac_sa() -> str:
@@ -62,7 +73,7 @@ def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
     """
     policies_conf = KuroborosConfig.get("generate", "rbac", "policies")
     # assert type(policies_conf) == list[dict]
-    
+
     policies = []
     for policy in cast(list[dict], policies_conf):
         policy_obj = {
@@ -83,7 +94,9 @@ def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
     rbac_operator_role_template = temps.env.get_template(
         "generate/rbac/operator-role.yaml.j2"
     )
-    return rbac_operator_role_template.render(name=KuroborosConfig.get("operator", "name"), policies=policies)
+    return rbac_operator_role_template.render(
+        name=KuroborosConfig.get("operator", "name"), policies=policies
+    )
 
 
 def rbac_leader_role() -> str:
@@ -93,7 +106,9 @@ def rbac_leader_role() -> str:
     rbac_leader_election_role_template = temps.env.get_template(
         "generate/rbac/leader-election-role.yaml.j2"
     )
-    return rbac_leader_election_role_template.render(name=KuroborosConfig.get("operator", "name"))
+    return rbac_leader_election_role_template.render(
+        name=KuroborosConfig.get("operator", "name")
+    )
 
 
 def rbac_operator_role_binding() -> str:
@@ -103,7 +118,9 @@ def rbac_operator_role_binding() -> str:
     rbac_operator_role_binding_template = temps.env.get_template(
         "generate/rbac/operator-role-binding.yaml.j2"
     )
-    return rbac_operator_role_binding_template.render(name=KuroborosConfig.get("operator", "name"))
+    return rbac_operator_role_binding_template.render(
+        name=KuroborosConfig.get("operator", "name")
+    )
 
 
 def rbac_leader_role_binding() -> str:
@@ -113,7 +130,9 @@ def rbac_leader_role_binding() -> str:
     rbac_leader_election_role_binding_template = temps.env.get_template(
         "generate/rbac/leader-election-role-binding.yaml.j2"
     )
-    return rbac_leader_election_role_binding_template.render(name=KuroborosConfig.get("operator", "name"))
+    return rbac_leader_election_role_binding_template.render(
+        name=KuroborosConfig.get("operator", "name")
+    )
 
 
 def operator_deployment() -> str:
@@ -136,7 +155,9 @@ def operator_metrics_service() -> str:
     deployment_metrics_service = temps.env.get_template(
         "generate/deployment/metrics-service.yaml.j2"
     )
-    return deployment_metrics_service.render(name=KuroborosConfig.get("operator", "name"))
+    return deployment_metrics_service.render(
+        name=KuroborosConfig.get("operator", "name")
+    )
 
 
 def operator_webhook_service() -> str:
@@ -147,7 +168,9 @@ def operator_webhook_service() -> str:
     deployment_webhook_service = temps.env.get_template(
         "generate/deployment/webhook-service.yaml.j2"
     )
-    return deployment_webhook_service.render(name=KuroborosConfig.get("operator", "name"))
+    return deployment_webhook_service.render(
+        name=KuroborosConfig.get("operator", "name")
+    )
 
 
 def operator_config() -> str:
@@ -159,7 +182,9 @@ def operator_config() -> str:
     deployment_config_template = temps.env.get_template(
         "generate/deployment/operator-config.yaml.j2"
     )
-    return deployment_config_template.render(name=KuroborosConfig.get("operator", "name"), config=kuroboros_config)
+    return deployment_config_template.render(
+        name=KuroborosConfig.get("operator", "name"), config=kuroboros_config
+    )
 
 
 def validation_webhook_config(controllers: List[ControllerConfig]) -> str:
@@ -174,7 +199,9 @@ def validation_webhook_config(controllers: List[ControllerConfig]) -> str:
     validation_webhook_configs = temps.env.get_template(
         "generate/webhooks/validation-webhook-config.yaml.j2"
     )
-    return validation_webhook_configs.render(name=KuroborosConfig.get("operator", "name"), webhooks=validation_webhooks)
+    return validation_webhook_configs.render(
+        name=KuroborosConfig.get("operator", "name"), webhooks=validation_webhooks
+    )
 
 
 def mutation_webhook_config(controllers: List[ControllerConfig]) -> str:
@@ -186,11 +213,12 @@ def mutation_webhook_config(controllers: List[ControllerConfig]) -> str:
         if ctrl.mutation_webhook is not None:
             mutation_webhooks.append(ctrl.mutation_webhook.get_config_dict())
 
-
     mutation_webhook_configs = temps.env.get_template(
         "generate/webhooks/mutation-webhook-config.yaml.j2"
     )
-    return mutation_webhook_configs.render(name=KuroborosConfig.get("operator", "name"), webhooks=mutation_webhooks)
+    return mutation_webhook_configs.render(
+        name=KuroborosConfig.get("operator", "name"), webhooks=mutation_webhooks
+    )
 
 
 def kustomize_file(resources: list[str], images: list[dict] | None = None):

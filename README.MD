@@ -376,13 +376,38 @@ Returns the unique identifier (`uid`) of the CR instance.
 
 ---
 
-#### `namespace_name: Tuple[str, str]` (`@property`)
+#### `namespace_name: utils.NamespaceName` (`@property`)
 Returns a tuple containing the namespace and name of the CR instance.
 
 ---
 
 #### `resource_version: str` (`@property`)
 Returns the `resourceVersion` of the CR instance.
+
+### Documentation and Addytitional Printer Columns
+
+Using the Python docstring will set the `propertie` or `openAPIV3Schema` description in yout CRD manifest. Additionally, you can set the `description` argument in `prop()` to define a field `description`.
+
+To add a field to `additionalPrinterColumn` add a `Tuple[str, str]` to the `print_columns` `Dict[str, Tuple[str, str]]` in your `BaseCRD`. The `Dict` key is the name, the first `str` in the `Tuple` is the `jsonPath` and the last `str` in the `Tuple` is the type.
+#### example
+```python
+class MyColumn(BaseCRDProp):
+    """
+    A custom class field
+    """
+    str_field = prop(str)
+
+class MyCRD(BaseCRD):
+    """
+    MyCRD Defines a Custom Resource
+    """
+    int_column = prop(int, description="A Integer column")
+    custom_column = prop(MyColumn)
+    print_columns = {
+        "intCol": (".spec.intColumn", "integer")
+    }
+```
+
 
 
 ## Reconciler (`reconciler.py`)
@@ -398,7 +423,7 @@ The `Reconciler` is where you implement the method `reconcile`. The `Controller`
 ```python
 # example/controllers/cache/v1/reconciler.py
 from kuroboros.reconciler import BaseReconciler
-from controller.cache.v1.crd import Cache
+from controllers.cache.v1.crd import Cache
 from datetime import timedelta
 import threading
 

@@ -59,6 +59,14 @@ spec:
   {%- set props = version_props[version].props %}
   {%- set status = version_props[version].status %}
   - name: {{ version }}
+    {%- if version in version_print_columns %}
+    additionalPrinterColumns:
+      {%- for col in version_print_columns[version] %}
+      - jsonPath: {{ col.json_path }}
+        name: {{ col.name }}
+        type: {{ col.type }}
+      {%- endfor %}
+    {%- endif %}
     served: true
     {%- if version == gvi.api_version %}
     storage: true
@@ -69,9 +77,9 @@ spec:
       status: {}
     schema:
       openAPIV3Schema:
-        {%- if version_desc | length > 0 %}
+        {%- if version in version_desc %}
         description: |
-          {{ version_desc | indent(12) }}
+          {{ version_desc[version] | indent(12) }}
         {%- endif %}
         type: object
         properties:
