@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "kuroboros"
 version = "0.1.0"
 description = "A kubernetes operator framework"
+readme = "README.md"
+requires-python = ">=3.13"
 authors = [
     { name = "Juan Edwards" }
 ]
