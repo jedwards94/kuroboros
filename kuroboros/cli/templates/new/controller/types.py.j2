@@ -1,10 +1,10 @@
-from kuroboros.schema import BaseCRD, BaseCRDProp, prop
-
-########################
+"""
 Remember to run 
 `kuroboros generate crd`
 after modfying this file
-########################
+"""
+from kuroboros.schema import BaseCRD, BaseCRDProp, prop
+
 
 class {{ kind }}Status(BaseCRDProp):
     """
@@ -12,12 +12,12 @@ class {{ kind }}Status(BaseCRDProp):
     """
 
 class {{ kind }}(BaseCRD):
-    status = prop({{ kind }}Status)
     """ 
     TODO: Add {{ kind }} specs here!
     remember to use something like
     
     image_tag = prop(str, default="redis")
     """
+    status = prop({{ kind }}Status)
 
 
