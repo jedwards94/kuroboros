@@ -195,7 +195,6 @@ class BaseCRD:
     Defines the CRD class for your Reconciler and Webhooks
     """
 
-    status: Any
     print_columns: Dict[str, Tuple[str, str]]
 
     __attr_map: ClassVar[Dict[str, str]] = {}
@@ -416,8 +415,10 @@ class BaseCRD:
     def __init_subclass__(cls) -> None:
 
         if "status" not in cls.__dict__:
-            cls.status = prop(dict, x_kubernetes_preserve_unknown_fields=True)
-        elif not isinstance(cls.status, CRDProp):
+            setattr(
+                cls, "status", prop(dict, x_kubernetes_preserve_unknown_fields=True)
+            )
+        elif not isinstance(getattr(cls, "status"), CRDProp):
             raise RuntimeError("status must by a prop().")
 
         if "print_columns" not in cls.__dict__:
@@ -490,34 +491,35 @@ class BaseCRD:
         if self.read_only:
             raise RuntimeError(f"Cannot call `patch` on read-only CRD object `{self}`")
 
-        new_state = self.get_data()
         patcher = None
+        status_args = {
+            "group": self.__group_version.group,
+            "name": self.name,
+            "version": self.__group_version.api_version,
+            "plural": self.__group_version.plural,
+            "body": {"status": self._data["status"]},
+        }
+        body_args = {
+            "group": self.__group_version.group,
+            "namespace": self.metadata["namespace"],
+            "name": self.metadata["name"],
+            "version": self.__group_version.api_version,
+            "plural": self.__group_version.plural,
+            "body": self.get_data(),
+        }
         if self.__group_version.is_namespaced():
+            status_args["namespace"] = self.namespace
+            body_args["namespace"] = self.namespace
             patcher = self.api.patch_namespaced_custom_object_status
         else:
             patcher = self.api.patch_cluster_custom_object_status
 
         assert patcher is not None
         if "status" in self._data and patch_status:
-            response = patcher(
-                group=self.__group_version.group,
-                namespace=self.metadata["namespace"],
-                name=self.metadata["name"],
-                version=self.__group_version.api_version,
-                plural=self.__group_version.plural,
-                body={"status": self._data["status"]},
-            )
+            response = patcher(**status_args)
             self.load_data(response)
 
-        response = patcher(
-            group=self.__group_version.group,
-            namespace=self.metadata["namespace"],
-            name=self.metadata["name"],
-            version=self.__group_version.api_version,
-            plural=self.__group_version.plural,
-            body=new_state,
-        )
-
+        response = patcher(**body_args)
         self.load_data(response)
 
     def __getattribute__(self, name: str):

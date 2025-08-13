@@ -31,7 +31,7 @@ def yaml_format(value):
             return f'"{value}"'  # Quote numeric-looking strings
         except ValueError:
             if "\n" in value:
-                return f"|\n    {value}"
+                return f"|-\n    {value}"
             # Quote strings with colons, spaces, etc.
             if any(c in value for c in ":[]{}, "):
                 return f'"{value}"'
