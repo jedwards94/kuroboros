@@ -130,8 +130,9 @@ class TestController(unittest.TestCase):
 
     def test_remove_member_stops_reconciler(self):
         self.controller._add_member(("default", "dummy"))
-        self.controller._remove_member(("default", "dummy"))
         reconciler = self.controller._members[("default", "dummy")]
+        self.controller._remove_member(("default", "dummy"))
+        self.assertFalse(("default", "dummy") in self.controller._members)
         self.assertFalse(reconciler.is_running())
 
     def test_add_pending_remove(self):

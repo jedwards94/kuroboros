@@ -278,7 +278,7 @@ The `prop` function uses two keyword arguments, `properties` and `required`. The
 See the [Official Kubernetes Documentation](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation) for more info.
 
 #### Classes as properties
-The `BaseCRDProp` provides an inheritable class that can be used in the `prop()` function as its type. This is useful so you can access the data as `my_crd.prop.subprop` instead of `my_crd.prop["subprop"]`.
+The `BaseCRDProp` provides an inheritable class that can be used in the `prop()` function as its type. This is useful so you can access the data as `my_crd.prop.subprop` instead of `my_crd.prop["subprop"]`. If a class propertie is `None` you can set the value with `MyCRDProp.new_value(**kwargs)` this will create a new value with populated data from `kwargs` and default values in `MyCRDProp(BaseCRDProp)`
 
 #### Example
 ```python
@@ -384,7 +384,7 @@ Returns a tuple containing the namespace and name of the CR instance.
 #### `resource_version: str` (`@property`)
 Returns the `resourceVersion` of the CR instance.
 
-### Documentation and Addytitional Printer Columns
+### Documentation and Additional Printer Columns
 
 Using the Python docstring will set the `propertie` or `openAPIV3Schema` description in yout CRD manifest. Additionally, you can set the `description` argument in `prop()` to define a field `description`.
 

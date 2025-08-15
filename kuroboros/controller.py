@@ -215,8 +215,9 @@ class Controller:
         if namespace_name not in self._members:
             return
         self._members[namespace_name].stop()
+        self._members.pop(namespace_name)
         self._logger.info(
-            "%s CR loop stopped until further events",
+            "%s CR removed",
             self._group_version_info.pretty_kind_str(namespace_name),
         )
 

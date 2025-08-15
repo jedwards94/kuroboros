@@ -12,7 +12,7 @@ test_api_group = GroupVersionInfo(api_version="v1", group="test", kind="Test")
 
 
 class TestCrdProp(BaseCRDProp):
-    test_sub_field = prop(str)
+    test_sub_field = prop(str, default="test")
 
 
 class NestedTestCrdProp(BaseCRDProp):
@@ -45,6 +45,15 @@ class TestInit(unittest.TestCase):
             },
             "status": {"some": "thing"},
         }
+        data2 = {
+            "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
+            "spec": {
+                "nestedTestField": {
+                    "testSubField": {"testSubField": "testing string"}
+                },
+            },
+            "status": {"some": "thing"},
+        }
 
         test = TestCrdWithSubProp()
         test.load_data(data)
@@ -59,6 +68,15 @@ class TestInit(unittest.TestCase):
         self.assertEqual(
             test.nested_test_field.test_sub_field.test_sub_field, "new value"
         )
+        
+        test2 = TestCrdWithSubProp()
+        test2.load_data(data2)
+        
+        self.assertIsNone(test2.test_field)
+        test2.test_field = TestCrdProp.new_value()
+        self.assertEqual(test2.test_field.test_sub_field, "test")
+        test2.test_field.test_sub_field = "data 2"
+        self.assertEqual(test2.test_field.test_sub_field, "data 2")
 
     def test_prop_types(self):
         supported_types = {
@@ -93,7 +111,7 @@ class TestInit(unittest.TestCase):
         self.assertEqual(inst.name, "name")
         self.assertIsNotNone(inst.status)
         self.assertIsNotNone(inst.metadata)
-        self.assertDictEqual(inst.status, {"some": "thing"})
+        self.assertDictEqual(inst.status, {"some": "thing"}) # type: ignore
         self.assertIsNone(inst.not_in_data)
 
     def test_load_data_by_value(self):
@@ -174,20 +192,20 @@ class TestInstance(unittest.TestCase):
 
         inst = TestCrd(api=client.CustomObjectsApi())
         inst.load_data(data)
+        
+        with patch.object(inst, "load_data") as loader:
 
-        inst.status = {"another": "one"}
-        inst.test_field = "string_test"
-        inst.patch()
-        self.assertDictEqual(inst.status, {"another": "one"})
-        self.assertEqual(inst.test_field, "string_test")
-        patch_cr_status_mock.assert_called_once()
-        patch_cr_mock.assert_called_once()
-
-        inst.test_field = "string_test_2"
-        inst.status = {"not": "updated"}
-        inst.patch(patch_status=False)
-        patch_cr_status_mock.assert_called_once()
-        self.assertEqual(patch_cr_mock.call_count, 2)
+            inst.status = {"another": "one"}
+            inst.test_field = "string_test"
+            inst.patch()
+            self.assertDictEqual(inst.status, {"another": "one"})
+            self.assertEqual(inst.test_field, "string_test")
+            self.assertEqual(loader.call_count, 2)
+            
+            inst.test_field = "string_test_2"
+            inst.status = {"not": "updated"}
+            inst.patch(patch_status=False)
+            self.assertEqual(loader.call_count, 3)
 
 
     def test_read_only(self):

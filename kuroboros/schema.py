@@ -48,6 +48,9 @@ class CRDProp:
         self.args = kwargs
 
 
+B = TypeVar("B", bound="BaseCRDProp")
+
+
 class BaseCRDProp:
     """
     The base class for a object prop of a CRD
@@ -72,30 +75,6 @@ class BaseCRDProp:
                 and isinstance(value, CRDProp)
             ):
                 cls.__attr_map[attribute] = cls.__case_function(attribute)
-
-    @staticmethod
-    def __case_function(text: str) -> str:
-        return caseconverter.camelcase(text)
-
-    @classmethod
-    def attr_name(cls, text: str) -> str:
-        """
-        Returns the atribute name in the cased attribute map
-        """
-
-        return copy.copy(cls.__attr_map[text])
-
-    @classmethod
-    def to_prop_dict(cls) -> dict:
-        """
-        Returns a dict of all CRDProp properties defined in the class (including inherited).
-        """
-        props = {}
-        for base in reversed(cls.__mro__):
-            for k, v in base.__dict__.items():
-                if isinstance(v, CRDProp):
-                    props[cls.__case_function(k)] = v
-        return props
 
     def __getattribute__(self, name: str):
         attr = object.__getattribute__(self, name)
@@ -122,9 +101,54 @@ class BaseCRDProp:
         if hasattr(self, "_parent_data") and self._parent_data is not None:
             cased_name = self.attr_name(name)
             self._data[cased_name] = value
+            if self._parent_key not in self._parent_data:
+                self._parent_data[self._parent_key] = {}
             self._parent_data[self._parent_key][cased_name] = value
         else:
             object.__setattr__(self, name, value)
+
+    @staticmethod
+    def __case_function(text: str) -> str:
+        return caseconverter.camelcase(text)
+
+    @classmethod
+    def new_value(cls: Type[B], **kwargs):
+        """
+        Creates a new value of the prop with default values and
+        """
+        ret = {}
+        for attribute, value in cls.__dict__.items():
+            if (
+                attribute[:2] != "__"
+                and not callable(value)
+                and isinstance(value, CRDProp)
+            ):
+                if "default" in value.args:
+                    ret[cls.attr_name(attribute)] = value.args.get("default")
+                if attribute in kwargs:
+                    ret[cls.attr_name(attribute)] = kwargs.get(attribute)
+
+        return cast(B, ret)
+
+    @classmethod
+    def attr_name(cls, text: str) -> str:
+        """
+        Returns the atribute name in the cased attribute map
+        """
+
+        return copy.copy(cls.__attr_map[text])
+
+    @classmethod
+    def to_prop_dict(cls) -> dict:
+        """
+        Returns a dict of all CRDProp properties defined in the class (including inherited).
+        """
+        props = {}
+        for base in reversed(cls.__mro__):
+            for k, v in base.__dict__.items():
+                if isinstance(v, CRDProp):
+                    props[cls.__case_function(k)] = v
+        return props
 
 
 T = TypeVar("T")
@@ -195,15 +219,101 @@ class BaseCRD:
     Defines the CRD class for your Reconciler and Webhooks
     """
 
-    print_columns: Dict[str, Tuple[str, str]]
-
     __attr_map: ClassVar[Dict[str, str]] = {}
     __group_version: ClassVar[GroupVersionInfo | None]
-    api: client.CustomObjectsApi | None
-    read_only: bool
     _data: dict
 
+    print_columns: Dict[str, Tuple[str, str]]
+    api: client.CustomObjectsApi | None
+    read_only: bool
+
     T = TypeVar("T", bound="BaseCRD")
+
+    def __init_subclass__(cls) -> None:
+
+        if "status" not in cls.__dict__:
+            setattr(
+                cls, "status", prop(dict, x_kubernetes_preserve_unknown_fields=True)
+            )
+        elif not isinstance(getattr(cls, "status"), CRDProp):
+            raise RuntimeError("status must by a prop().")
+
+        if "print_columns" not in cls.__dict__:
+            cls.print_columns = {}
+
+        for attribute, value in cls.__dict__.items():
+            if (
+                attribute[:2] != "__"
+                and not callable(value)
+                and isinstance(value, CRDProp)
+            ):
+                cls.__attr_map[attribute] = cls.__case_function(attribute)
+
+    def __init__(
+        self,
+        api: client.CustomObjectsApi | None = None,
+        read_only: bool = False,
+        data: Dict | None = None,
+    ):
+        if data is None:
+            data = {}
+        if read_only and data == {}:
+            raise ValueError("read_only CRD must have data provided")
+        self._data = copy.deepcopy(data)
+        self.api = api
+        self.read_only = read_only
+
+    def __repr__(self) -> str:
+        if self.__group_version is not None:
+            return f"{self.__group_version.pretty_kind_str(self.namespace_name)}"
+        return object.__repr__(self)
+
+    def __getattribute__(self, name: str):
+        attr = object.__getattribute__(self, name)
+        data = None
+        try:
+            data = object.__getattribute__(self, "_data")
+        except AttributeError:
+            data = {}
+
+        try:
+            if name in ("status", "metadata"):
+                if isinstance(attr, CRDProp) and issubclass(
+                    attr.real_type, BaseCRDProp
+                ):
+                    return attr.real_type(
+                        data=data[name], _parent_data=data, _parent_key=name
+                    )
+                return data[name]
+            if isinstance(attr, CRDProp):
+                cased_name = self.attr_name(name)
+                if issubclass(attr.real_type, BaseCRDProp):
+                    return attr.real_type(
+                        data=data["spec"][cased_name],
+                        _parent_data=data["spec"],
+                        _parent_key=cased_name,
+                    )
+                return data["spec"][cased_name]
+            return attr
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if hasattr(self, "read_only") and self.read_only:
+            raise RuntimeError(
+                f"Cannot set attribute `{name}` on read-only CRD object `{self}`"
+            )
+        try:
+            attr = object.__getattribute__(self, name)
+            if name in ("status", "metadata"):
+                self._data[name] = value
+            elif isinstance(attr, CRDProp):
+                cased_name = self.attr_name(name)
+                self._data["spec"][cased_name] = value
+            else:
+                object.__setattr__(self, name, value)
+        except Exception:  # pylint: disable=broad-except
+            object.__setattr__(self, name, value)
 
     @staticmethod
     def __case_function(text: str) -> str:
@@ -412,45 +522,6 @@ class BaseCRD:
 
         return instances
 
-    def __init_subclass__(cls) -> None:
-
-        if "status" not in cls.__dict__:
-            setattr(
-                cls, "status", prop(dict, x_kubernetes_preserve_unknown_fields=True)
-            )
-        elif not isinstance(getattr(cls, "status"), CRDProp):
-            raise RuntimeError("status must by a prop().")
-
-        if "print_columns" not in cls.__dict__:
-            cls.print_columns = {}
-
-        for attribute, value in cls.__dict__.items():
-            if (
-                attribute[:2] != "__"
-                and not callable(value)
-                and isinstance(value, CRDProp)
-            ):
-                cls.__attr_map[attribute] = cls.__case_function(attribute)
-
-    def __init__(
-        self,
-        api: client.CustomObjectsApi | None = None,
-        read_only: bool = False,
-        data: Dict | None = None,
-    ):
-        if data is None:
-            data = {}
-        if read_only and data == {}:
-            raise ValueError("read_only CRD must have data provided")
-        self._data = copy.deepcopy(data)
-        self.api = api
-        self.read_only = read_only
-
-    def __repr__(self) -> str:
-        if self.__group_version is not None:
-            return f"{self.__group_version.pretty_kind_str(self.namespace_name)}"
-        return super().__repr__()
-
     def load_data(self, data: Any):
         """
         loads an object as a `dict` into the class to get the values
@@ -521,51 +592,6 @@ class BaseCRD:
 
         response = patcher(**body_args)
         self.load_data(response)
-
-    def __getattribute__(self, name: str):
-        attr = object.__getattribute__(self, name)
-        data = None
-        try:
-            data = object.__getattribute__(self, "_data")
-        except AttributeError:
-            data = {}
-
-        try:
-            if name in ("status", "metadata"):
-                if isinstance(attr, CRDProp) and issubclass(
-                    attr.real_type, BaseCRDProp
-                ):
-                    return attr.real_type(data=data[name])
-                return data[name]
-            if isinstance(attr, CRDProp):
-                cased_name = self.attr_name(name)
-                if issubclass(attr.real_type, BaseCRDProp):
-                    return attr.real_type(
-                        data=data["spec"][cased_name],
-                        _parent_data=data["spec"],
-                        _parent_key=cased_name,
-                    )
-                return data["spec"][cased_name]
-            return attr
-        except Exception:  # pylint: disable=broad-except
-            return None
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if hasattr(self, "read_only") and self.read_only:
-            raise RuntimeError(
-                f"Cannot set attribute `{name}` on read-only CRD object `{self}`"
-            )
-        try:
-            attr = object.__getattribute__(self, name)
-            if name in ("status", "metadata"):
-                self._data[name] = value
-            elif isinstance(attr, CRDProp):
-                cased_name = self.attr_name(name)
-                self._data["spec"][cased_name] = value
-            else:
-                object.__setattr__(self, name, value)
-        except Exception:  # pylint: disable=broad-except
-            object.__setattr__(self, name, value)
 
     def add_finalizer(self, finalizer: str):
         """
