@@ -278,11 +278,11 @@ The `prop` function uses two keyword arguments, `properties` and `required`. The
 See the [Official Kubernetes Documentation](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation) for more info.
 
 #### Classes as properties
-The `BaseCRDProp` provides an inheritable class that can be used in the `prop()` function as its type. This is useful so you can access the data as `my_crd.prop.subprop` instead of `my_crd.prop["subprop"]`. If a class propertie is `None` you can set the value with `MyCRDProp.new_value(**kwargs)` this will create a new value with populated data from `kwargs` and default values in `MyCRDProp(BaseCRDProp)`
+The `BaseCRDProp` provides an inheritable class that can be used in the `prop()` function as its type. This is useful so you can access the data as `my_crd.prop.subprop` instead of `my_crd.prop["subprop"]`. If a class propertie is `None` you can set the value with `MyCRDProp(**kwargs)` this will create a new value with populated data from `kwargs` (in snake or camel case)
 
 #### Example
 ```python
-# example/controllers/cache/v1/crd.py
+# example/controllers/cache/v1alpha1/crd.py
 from kuroboros.schema import BaseCRD, BaseCRDProp, prop
 
 class CacheResourceObjects(BaseCRDProp):
@@ -421,9 +421,9 @@ The `Reconciler` is where you implement the method `reconcile`. The `Controller`
 #### Example
 
 ```python
-# example/controllers/cache/v1/reconciler.py
+# example/controllers/cache/v1alpha1/reconciler.py
 from kuroboros.reconciler import BaseReconciler
-from controllers.cache.v1.crd import Cache
+from controllers.cache.v1alpha1.crd import Cache
 from datetime import timedelta
 import threading
 
@@ -432,6 +432,65 @@ class CacheReconciler(BaseReconciler[Cache]):
         if some_condition:
             return timedelta(seconds=5) # The `reconcile` function will run again in 5 seconds
         return # the reconciliation loop stops
+```
+
+### Testing the Reconciler
+To test the reconciler you need to set the `GroupVersionInfo` of the classes that your `reconcile` function uses, and patch any kubernetes related function, here is an example using `unittest`
+#### Example
+```python
+import logging
+import threading
+import unittest
+from unittest.mock import patch
+
+from controllers.cache.v1alpha1.crd import Cache, CacheStatus
+from controllers.cache.v1alpha1.reconciler import CacheReconciler
+from controllers.cache.group_version import gvi
+
+
+test_data = {
+    "metadata": {
+        "name": "test",
+        "namespace": "default",
+        "uid": "1",
+        "resourceVersion": "1",
+    },
+    "spec": {
+        "engine": "redis",
+        "engineVersion": "latest",
+        "volumeSize": "1Gi",
+        "desiredSize": "1",
+        "resources": {
+            "requests": {"cpu": "1", "memory": "1Gi"},
+            "limits": {"cpu": "1", "memory": "1Gi"},
+        },
+    },
+}
+
+
+class TestReconciler(unittest.TestCase):
+
+    def setUp(self) -> None:
+        CacheReconciler.set_gvi(gvi)
+        Cache.set_gvi(gvi)
+        return super().setUp()
+
+    def test_reconciler_run(self):
+        def mock_patch():
+            return
+
+        reconciler = CacheReconciler(("default", "test"))
+        cache = Cache(
+            api=reconciler.api,
+            data=test_data,
+        )
+        event = threading.Event()
+        with patch.object(cache, "patch", side_effect=mock_patch) as patch_:
+            reconciler.reconcile(logging.getLogger("test"), cache, event)
+            self.assertIsNotNone(cache.status)
+            self.assertIsInstance(cache.status, CacheStatus)
+            patch_.assert_called_once()
+
 ```
 
 ---
@@ -453,11 +512,11 @@ The CLI will detect this class and use it to create the manifests and the operat
 
 #### Example
 ```python
-# example/controllers/cache/v1/validation.py
+# example/controllers/cache/v1alpha1/validation.py
 from kuroboros.webhook import BaseValidationWebhook
 from kuroboros.exceptions import ValidationWebhookError
 
-from controllers.cache.v1.crd import Cache
+from controllers.cache.v1alpha1.crd import Cache
 
 class CacheValidation(BaseValidationWebhook[Cache]):
 
@@ -483,10 +542,10 @@ Defining this class will expose the endpoint `POST /<VERSION>/<SINGULAR>/mutate`
 #### Example
 
 ```python
-# example/controllers/cache/v1/mutation.py
+# example/controllers/cache/v1alpha1/mutation.py
 from kuroboros.webhook import BaseMutationWebhook
 
-from .crd import Cache
+from controllers.cache.v1alpha1.crd import Cache
 
 class CacheMutation(BaseMutationWebhook[Cache]):
     def mutate(self, data: Cache):

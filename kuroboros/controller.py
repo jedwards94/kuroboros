@@ -387,8 +387,7 @@ class Controller:
         else:
             getter = self._api.get_cluster_custom_object_with_http_info
         try:
-            result = getter(**args)
-            print(result)
+            getter(**args)
         except client.ApiException as e:
             if e.status == 404:
                 return False

@@ -22,6 +22,16 @@ required: []
   {%- if prop.typ == "array" %}
   items:
     type: {{ prop.subtype }}
+    {%- if prop.subtype == "object" %}
+    {{- get_required(prop.subtype_props) | indent(4) }}
+    {%- if prop.subtype_desc is not none %}
+    description: {{ prop.subtype_desc | yaml }}
+    {%- endif %}
+    properties:
+    {%- for subprop_name in prop.subtype_props %}
+      {{- render_prop(subprop_name, prop.subtype_props[subprop_name]) | indent(6) }}
+    {%- endfor %}
+    {%- endif %}
   {%- endif %}
   {%- for key in prop.args %}
   {{ key | maybekebab }}: {{ prop.args[key] | yaml }}

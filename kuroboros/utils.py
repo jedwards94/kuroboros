@@ -1,8 +1,9 @@
 import concurrent
 import concurrent.futures
+from inspect import isclass
 import threading
 import time
-from typing import Callable, ParamSpec, Tuple, TypeVar
+from typing import Callable, ParamSpec, Tuple, TypeVar, get_args, get_origin
 
 
 NamespaceName = Tuple[str | None, str]
@@ -74,3 +75,15 @@ def with_timeout(
             future.cancel()
         # Shutdown executor without waiting for thread termination
         executor.shutdown(wait=False)
+
+
+def islistofsubclass(check: type, against: type):
+    """
+    Checks if the given check type is a list of against
+    """
+    is_list_of_subclass = False
+    origin = get_origin(check)
+    if origin is list:
+        args = get_args(check)
+        is_list_of_subclass = args and isclass(args[0]) and issubclass(args[0], against)
+    return is_list_of_subclass

@@ -13,6 +13,7 @@ test_api_group = GroupVersionInfo(api_version="v1", group="test", kind="Test")
 
 class TestCrdProp(BaseCRDProp):
     test_sub_field = prop(str, default="test")
+    type_ = prop(str)
 
 
 class NestedTestCrdProp(BaseCRDProp):
@@ -22,6 +23,7 @@ class NestedTestCrdProp(BaseCRDProp):
 class TestCrdWithSubProp(BaseCRD):
     test_field = prop(TestCrdProp)
     nested_test_field = prop(NestedTestCrdProp)
+    array_subprop = prop(list[TestCrdProp])
 
 
 class TestCrd(BaseCRD):
@@ -33,12 +35,12 @@ TestCrd.set_gvi(test_api_group)
 
 class TestInit(unittest.TestCase):
 
-    def test_subprop(self):
+    def test_subprop_load(self):
 
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
             "spec": {
-                "testField": {"testSubField": "testing string"},
+                "testField": {"testSubField": "testing string", "type": "some"},
                 "nestedTestField": {
                     "testSubField": {"testSubField": "testing string"}
                 },
@@ -58,6 +60,7 @@ class TestInit(unittest.TestCase):
         test = TestCrdWithSubProp()
         test.load_data(data)
         self.assertEqual(test.test_field.test_sub_field, "testing string")
+        self.assertEqual(test.test_field.type_, "some")
         self.assertEqual(
             test.nested_test_field.test_sub_field.test_sub_field, "testing string"
         )
@@ -73,7 +76,7 @@ class TestInit(unittest.TestCase):
         test2.load_data(data2)
         
         self.assertIsNone(test2.test_field)
-        test2.test_field = TestCrdProp.new_value()
+        test2.test_field = TestCrdProp(testSubField="test")
         self.assertEqual(test2.test_field.test_sub_field, "test")
         test2.test_field.test_sub_field = "data 2"
         self.assertEqual(test2.test_field.test_sub_field, "data 2")
@@ -89,6 +92,7 @@ class TestInit(unittest.TestCase):
             list[int]: "array",
             list[float]: "array",
             list[bool]: "array",
+            
         }
         for supported_type in supported_types:
             typed_prop = cast(CRDProp, prop(supported_type))

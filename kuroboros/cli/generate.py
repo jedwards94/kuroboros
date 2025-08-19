@@ -25,6 +25,7 @@ def crd_schema(
         props = {}
 
         base_attr = dir(BaseCRD)
+        base_attr.append("status")
         child_attr = [attr for attr in dir(crd) if attr not in base_attr]
 
         for attr_name in child_attr:
@@ -72,7 +73,6 @@ def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
     the sections that start with `generate.rbac.policies.`
     """
     policies_conf = KuroborosConfig.get("generate", "rbac", "policies")
-    # assert type(policies_conf) == list[dict]
 
     policies = []
     for policy in cast(list[dict], policies_conf):
@@ -86,7 +86,10 @@ def rbac_operator_role(controllers: List[ControllerConfig]) -> str:
     for ctrl in controllers:
         ctrl_crd_policy = {
             "api_groups": [ctrl.group_version_info.group],
-            "resources": [ctrl.group_version_info.plural],
+            "resources": [
+                ctrl.group_version_info.plural,
+                f"{ctrl.group_version_info.plural}/status",
+            ],
             "verbs": ["create", "list", "watch", "delete", "get", "patch", "update"],
         }
         policies.append(ctrl_crd_policy)

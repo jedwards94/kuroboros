@@ -18,7 +18,7 @@ from kubernetes import client
 from kubernetes.client import V1OwnerReference
 
 from kuroboros.group_version_info import GroupVersionInfo
-from kuroboros.utils import NamespaceName
+from kuroboros.utils import NamespaceName, islistofsubclass
 
 
 class CRDProp:
@@ -31,12 +31,16 @@ class CRDProp:
     args: dict
     subprops: dict | None
     subtype: str | None
+    subtype_props: dict | None
+    subtype_desc: str | None
     real_type: Any
 
     def __init__(
         self,
         typ: str,
         subtype: str | None = None,
+        subtype_props: dict | None = None,
+        subtype_desc: str | None = None,
         required: bool = False,
         properties: dict | None = None,
         **kwargs,
@@ -45,6 +49,8 @@ class CRDProp:
         self.required = required
         self.subprops = properties
         self.subtype = subtype
+        self.subtype_props = subtype_props
+        self.subtype_desc = subtype_desc
         self.args = kwargs
 
 
@@ -57,24 +63,44 @@ class BaseCRDProp:
     """
 
     __attr_map: Dict[str, str] = {}
+    __rev_attr_map: Dict[str, str] = {}
     _data: dict
-    _parent_data: dict | None
-    _parent_key: str | None
 
-    def __init__(self, *, data, _parent_data=None, _parent_key=None, **_):
+    def __str__(self) -> str:
+        ret = {}
+        for k in self.__attr_map.keys():
+            ret[k] = self.__getattribute__(k)
+        return f"{ret}"
+
+    def __init__(self, **kwargs):
+        data = {}
+        object.__setattr__(self, "_data", {})
+        for attr, val in self.__class__.__dict__.items():
+            aux = None
+            if attr[:2] != "__" and not callable(val):
+                cased_attr = self.attr_name(attr)
+                if (
+                    isinstance(val, CRDProp)
+                    and isclass(val.real_type)
+                    and issubclass(val.real_type, BaseCRDProp)
+                ):
+                    aux = val.real_type(**copy.deepcopy(kwargs[cased_attr]))
+                elif islistofsubclass(val.real_type, BaseCRDProp):
+                    aux = []
+                    for el in kwargs[cased_attr]:
+                        aux.append(get_args(val.real_type)[0](**copy.deepcopy(el)))
+
+                if attr in kwargs:
+                    data[cased_attr] = kwargs[attr] if aux is None else aux
+                elif cased_attr in kwargs:
+                    data[cased_attr] = kwargs[cased_attr] if aux is None else aux
         self._data = data
-        self._parent_key = _parent_key
-        # ALWAYS set _parent_data at the end of __init__ to avoid recursion
-        self._parent_data = _parent_data
 
     def __init_subclass__(cls) -> None:
-        for attribute, value in cls.__dict__.items():
-            if (
-                attribute[:2] != "__"
-                and not callable(value)
-                and isinstance(value, CRDProp)
-            ):
-                cls.__attr_map[attribute] = cls.__case_function(attribute)
+        for attr, value in cls.__dict__.items():
+            if attr[:2] != "__" and not callable(value) and isinstance(value, CRDProp):
+                cls.__attr_map[attr] = cls.__case_function(attr)
+                cls.__attr_map[cls.__case_function(attr)] = attr
 
     def __getattribute__(self, name: str):
         attr = object.__getattribute__(self, name)
@@ -86,11 +112,6 @@ class BaseCRDProp:
         try:
             if isinstance(attr, CRDProp):
                 cased_name = self.attr_name(name)
-                if issubclass(attr.real_type, BaseCRDProp):
-                    inst = attr.real_type(
-                        data=data[cased_name], _parent_data=data, _parent_key=cased_name
-                    )
-                    return inst
                 return data[cased_name]
             return attr
         except Exception:  # pylint: disable=broad-except
@@ -98,37 +119,33 @@ class BaseCRDProp:
 
     def __setattr__(self, name, value):
         # If setting a property, update both self._data and parent if present
-        if hasattr(self, "_parent_data") and self._parent_data is not None:
+        attr = object.__getattribute__(self, name)
+        if isinstance(attr, CRDProp):
             cased_name = self.attr_name(name)
             self._data[cased_name] = value
-            if self._parent_key not in self._parent_data:
-                self._parent_data[self._parent_key] = {}
-            self._parent_data[self._parent_key][cased_name] = value
         else:
             object.__setattr__(self, name, value)
+
+    def get_data(self) -> Dict[str, Any]:
+        """
+        Returns the data of the prop as a dictionary
+        """
+        ret = {}
+        for attr, val in self._data.items():
+            if isinstance(val, BaseCRDProp):
+                ret[attr] = val.get_data()
+            elif isinstance(val, list) and (
+                all(isinstance(item, BaseCRDProp) for item in val) or len(val) == 0
+            ):
+                ret[attr] = [el.get_data() for el in val]
+            else:
+                ret[attr] = val
+
+        return ret
 
     @staticmethod
     def __case_function(text: str) -> str:
         return caseconverter.camelcase(text)
-
-    @classmethod
-    def new_value(cls: Type[B], **kwargs):
-        """
-        Creates a new value of the prop with default values and
-        """
-        ret = {}
-        for attribute, value in cls.__dict__.items():
-            if (
-                attribute[:2] != "__"
-                and not callable(value)
-                and isinstance(value, CRDProp)
-            ):
-                if "default" in value.args:
-                    ret[cls.attr_name(attribute)] = value.args.get("default")
-                if attribute in kwargs:
-                    ret[cls.attr_name(attribute)] = kwargs.get(attribute)
-
-        return cast(B, ret)
 
     @classmethod
     def attr_name(cls, text: str) -> str:
@@ -137,6 +154,16 @@ class BaseCRDProp:
         """
 
         return copy.copy(cls.__attr_map[text])
+
+    @classmethod
+    def rev_attr_name(cls, text: str) -> str | None:
+        """
+        Returns the atribute name in the cased attribute map
+        """
+
+        return (
+            copy.copy(cls.__rev_attr_map[text]) if text in cls.__rev_attr_map else None
+        )
 
     @classmethod
     def to_prop_dict(cls) -> dict:
@@ -171,12 +198,12 @@ def prop(
         float: "number",
         dict: "object",
         bool: "boolean",
-        list[str]: "array",
-        list[int]: "array",
-        list[float]: "array",
-        list[bool]: "array",
+        bytes: "byte",
     }
     t = type_map.get(typ, None)
+    subtype = None
+    subprops = None
+    subtype_desc = None
     if isclass(typ) and issubclass(typ, BaseCRDProp):
         if properties is not None:
             raise RuntimeError(
@@ -187,29 +214,32 @@ def prop(
         if typ.__doc__ is not None:
             kwargs["description"] = typ.__doc__.strip()
     if t is None:
+        if get_origin(typ) is list:
+            t = "array"
+            subtype = type_map.get(get_args(typ)[0], None)
+            if islistofsubclass(typ, BaseCRDProp):
+                subtype = "object"
+                subtyp = get_args(typ)[0]
+                subprops = subtyp.to_prop_dict()
+                if subtyp.__doc__ is not None:
+                    subtype_desc = subtyp.__doc__.strip()
+
+    if t is None or (t == "array" and subtype is None):
         supported_types = "`, `".join([k.__name__ for k in type_map])
         raise TypeError(
             f"`{typ}` not suported",
-            f"only `{supported_types}` and subclasses of `BaseCRDProp` are allowed",
+            f"`{supported_types}` and subclasses of `BaseCRDProp` (and it's lists) are allowed",
         )
 
-    if t == "array":
-        origin = get_origin(typ)
-        if origin is list or origin is List:
-            args = get_args(typ)
-            if args:
-                subtype = type_map.get(args[0], None)
-                return cast(
-                    T,
-                    CRDProp(
-                        typ=t,
-                        required=required,
-                        properties=properties,
-                        subtype=subtype,
-                        **kwargs,
-                    ),
-                )
-    p = CRDProp(typ=t, required=required, properties=properties, **kwargs)
+    p = CRDProp(
+        typ=t,
+        required=required,
+        properties=properties,
+        subtype=subtype,
+        subtype_props=subprops,
+        subtype_desc=subtype_desc,
+        **kwargs,
+    )
     p.real_type = typ
     return cast(T, p)
 
@@ -220,6 +250,7 @@ class BaseCRD:
     """
 
     __attr_map: ClassVar[Dict[str, str]] = {}
+    __rev_attr_map: ClassVar[Dict[str, str]] = {}
     __group_version: ClassVar[GroupVersionInfo | None]
     _data: dict
 
@@ -248,6 +279,7 @@ class BaseCRD:
                 and isinstance(value, CRDProp)
             ):
                 cls.__attr_map[attribute] = cls.__case_function(attribute)
+                cls.__rev_attr_map[cls.__case_function(attribute)] = attribute
 
     def __init__(
         self,
@@ -259,7 +291,7 @@ class BaseCRD:
             data = {}
         if read_only and data == {}:
             raise ValueError("read_only CRD must have data provided")
-        self._data = copy.deepcopy(data)
+        self.load_data(data)
         self.api = api
         self.read_only = read_only
 
@@ -278,24 +310,12 @@ class BaseCRD:
 
         try:
             if name in ("status", "metadata"):
-                if isinstance(attr, CRDProp) and issubclass(
-                    attr.real_type, BaseCRDProp
-                ):
-                    return attr.real_type(
-                        data=data[name], _parent_data=data, _parent_key=name
-                    )
                 return data[name]
             if isinstance(attr, CRDProp):
                 cased_name = self.attr_name(name)
-                if issubclass(attr.real_type, BaseCRDProp):
-                    return attr.real_type(
-                        data=data["spec"][cased_name],
-                        _parent_data=data["spec"],
-                        _parent_key=cased_name,
-                    )
                 return data["spec"][cased_name]
             return attr
-        except Exception:  # pylint: disable=broad-except
+        except (KeyError, AttributeError):
             return None
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -312,7 +332,7 @@ class BaseCRD:
                 self._data["spec"][cased_name] = value
             else:
                 object.__setattr__(self, name, value)
-        except Exception:  # pylint: disable=broad-except
+        except (KeyError, AttributeError):
             object.__setattr__(self, name, value)
 
     @staticmethod
@@ -333,6 +353,16 @@ class BaseCRD:
         """
 
         return copy.copy(cls.__attr_map[text])
+
+    @classmethod
+    def rev_attr_name(cls, text: str) -> str | None:
+        """
+        Returns the atribute name in the uncased attribute map
+        """
+
+        return (
+            copy.copy(cls.__rev_attr_map[text]) if text in cls.__rev_attr_map else None
+        )
 
     @classmethod
     def create_cluster_scoped(
@@ -529,22 +559,89 @@ class BaseCRD:
         if isinstance(data, self.__class__):
             self._data = copy.deepcopy(data.get_data())
             return
-        self._data = copy.deepcopy(dict(data))
+        aux_data = {}
+        if isinstance(data, dict):
+            aux_data["metadata"] = (
+                copy.deepcopy(data["metadata"]) if "metadata" in data else {}
+            )
+
+            status_attr = object.__getattribute__(self, "status")
+            status = None
+            if "status" in data and isinstance(status_attr, CRDProp):
+                if isclass(status_attr.real_type) and issubclass(
+                    status_attr.real_type, BaseCRDProp
+                ):
+                    status = status_attr.real_type(**copy.deepcopy(data["status"]))
+                elif islistofsubclass(status_attr.real_type, BaseCRDProp):
+                    status = [
+                        get_args(status_attr.real_type)[0](**copy.deepcopy(el))
+                        for el in data
+                    ]
+
+                aux_data["status"] = data["status"] if status is None else status
+
+            if "spec" in data:
+                aux_data["spec"] = {}
+                for attr, val in data["spec"].items():
+                    aux = None
+                    cased_attr = self.rev_attr_name(attr)
+                    if cased_attr is None:
+                        continue
+                    attr_prop = object.__getattribute__(self, cased_attr)
+                    if isinstance(attr_prop, CRDProp):
+                        if isclass(attr_prop.real_type) and issubclass(
+                            attr_prop.real_type, BaseCRDProp
+                        ):
+                            aux = attr_prop.real_type(**copy.deepcopy(val))
+                        elif islistofsubclass(attr_prop.real_type, BaseCRDProp):
+                            aux = [
+                                get_args(attr_prop.real_type)[0](**copy.deepcopy(el))
+                                for el in val
+                            ]
+                    aux_data["spec"][self.__case_function(attr)] = (
+                        val if aux is None else aux
+                    )
+        self._data = aux_data
 
     def get_data(self) -> Dict[str, Any]:
         """
         Returns the data of the CRD object as a dict
         """
-        return {
-            "metadata": {
-                **{
-                    k: v
-                    for k, v in self._data["metadata"].items()
-                    if k not in ["resourceVersion", "managedFields"]
-                },
+        data = object.__getattribute__(self, "_data")
+        metadata = {
+            **{
+                k: v
+                for k, v in data["metadata"].items()
+                if k not in ["resourceVersion", "managedFields"]
             },
-            "spec": self._data.get("spec", {}),
-            "status": self._data.get("status", {}),
+        }
+        status_data = data.get("status", {})
+        status = None
+        if isinstance(status_data, BaseCRDProp):
+            status = status_data.get_data()
+        elif isinstance(status_data, list) and (
+            all(isinstance(item, BaseCRDProp) for item in status_data)
+            or len(status_data) == 0
+        ):
+            status = [d.get_data() for d in status_data]
+        else:
+            status = status_data
+
+        spec = {}
+        for prop_name, val in data.get("spec", {}).items():
+            aux = None
+            if isinstance(val, BaseCRDProp):
+                aux = val.get_data()
+            elif isinstance(val, list) and (
+                all(isinstance(item, BaseCRDProp) for item in val) or len(val) == 0
+            ):
+                aux = [d.get_data() for d in val]
+            spec[prop_name] = val if aux is None else aux
+
+        return {
+            "metadata": metadata,
+            "spec": spec,
+            "status": status,
         }
 
     def patch(self, patch_status: bool = True):
@@ -563,12 +660,13 @@ class BaseCRD:
             raise RuntimeError(f"Cannot call `patch` on read-only CRD object `{self}`")
 
         patcher = None
+        body = self.get_data()
         status_args = {
             "group": self.__group_version.group,
             "name": self.name,
             "version": self.__group_version.api_version,
             "plural": self.__group_version.plural,
-            "body": {"status": self._data["status"]},
+            "body": {"status": body["status"]},
         }
         body_args = {
             "group": self.__group_version.group,
@@ -576,18 +674,20 @@ class BaseCRD:
             "name": self.metadata["name"],
             "version": self.__group_version.api_version,
             "plural": self.__group_version.plural,
-            "body": self.get_data(),
+            "body": body,
         }
         if self.__group_version.is_namespaced():
             status_args["namespace"] = self.namespace
             body_args["namespace"] = self.namespace
-            patcher = self.api.patch_namespaced_custom_object_status
+            status_patcher = self.api.patch_namespaced_custom_object_status
+            patcher = self.api.patch_namespaced_custom_object
         else:
-            patcher = self.api.patch_cluster_custom_object_status
+            status_patcher = self.api.patch_cluster_custom_object_status
+            patcher = self.api.patch_cluster_custom_object
 
         assert patcher is not None
         if "status" in self._data and patch_status:
-            response = patcher(**status_args)
+            response = status_patcher(**status_args)
             self.load_data(response)
 
         response = patcher(**body_args)

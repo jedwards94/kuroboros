@@ -81,7 +81,6 @@ def cli(ctx: click.Context, config_file, log_level):
         root_logger.setLevel(log_level.upper())
     else:
         root_logger.setLevel(KuroborosConfig.get("operator", "log_level", typ=str))
-    click.echo(KuroborosConfig.get("operator", "name"))
     ctx.obj["controllers"] = load_controller_configs(CONTROLLERS_PATH)
 
 
