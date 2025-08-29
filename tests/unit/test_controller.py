@@ -113,14 +113,16 @@ class TestController(unittest.TestCase):
                     FailDummyWebhookValidation,
                 )
 
-    def test_add_member_adds_thread(self):
+    @patch("kubernetes.dynamic.DynamicClient")
+    def test_add_member_adds_thread(self, _):
         self.controller._add_member(("default", "dummy"))
         self.assertIn(("default", "dummy"), self.controller._members)
         reconciler = self.controller._members[("default", "dummy")]
         self.assertTrue(reconciler.is_running())
         self.assertFalse(reconciler._stop.is_set())
 
-    def test_add_member_duplicate(self):
+    @patch("kubernetes.dynamic.DynamicClient")
+    def test_add_member_duplicate(self, _):
 
         self.controller._add_member(("default", "dummy"))
         before = len(self.controller._members)
@@ -128,7 +130,8 @@ class TestController(unittest.TestCase):
         after = len(self.controller._members)
         self.assertEqual(before, after)
 
-    def test_remove_member_stops_reconciler(self):
+    @patch("kubernetes.dynamic.DynamicClient")
+    def test_remove_member_stops_reconciler(self, _):
         self.controller._add_member(("default", "dummy"))
         reconciler = self.controller._members[("default", "dummy")]
         self.controller._remove_member(("default", "dummy"))

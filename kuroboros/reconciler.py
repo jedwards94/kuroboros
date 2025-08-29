@@ -44,7 +44,6 @@ class BaseReconciler(Generic[T]):
     timeout_retry: bool = False
     timeout_requeue_time: timedelta | None = timedelta(minutes=5)
 
-    api: client.CustomObjectsApi
     crd_inst: T
     name: str
     dynamic_api: dynamic.DynamicClient
@@ -77,7 +76,7 @@ class BaseReconciler(Generic[T]):
         cls.__group_version_info = gvi
 
     def __init__(self, namespace_name: NamespaceName):
-        self.api = client.CustomObjectsApi()
+        self._api_client = client.ApiClient()
         self._stop = threading.Event()
         self._running = False
         pretty_version = self.__group_version_info.pretty_version_str()
@@ -86,33 +85,13 @@ class BaseReconciler(Generic[T]):
         )
         self._logger = self._logger.getChild(self.name)
         self._namespace_name = namespace_name
-        self._api_client = client.ApiClient()
-        self.dynamic_api = dynamic.DynamicClient(self._api_client)
 
     def __repr__(self) -> str:
         if self._namespace_name is not None:
-            return f"{self.name}(Namespace={self._namespace_name[0]}, Name={self._namespace_name[1]})"
+            ns, n = self._namespace_name
+            return f"{self.name}(Namespace={ns}, Name={n})"
         return f"{self.name}"
 
-    def _load_latest(self, crd: T) -> None:
-        namespaced = self.__group_version_info.is_namespaced()
-        getter = None
-        args = {
-            "group": self.__group_version_info.group,
-            "version": self.__group_version_info.api_version,
-            "name": self._namespace_name[1],
-            "plural": self.__group_version_info.plural,
-        }
-
-        if namespaced:
-            assert self._namespace_name[0] is not None
-            args["namespace"] = self._namespace_name[0]
-            getter = self.api.get_namespaced_custom_object
-        else:
-            getter = self.api.get_cluster_custom_object
-
-        latest = getter(**args)
-        crd.load_data(latest)
 
     def _deserialize(self, obj, typ):
         if isclass(typ) and issubclass(typ, BaseCRD):
@@ -141,10 +120,17 @@ class BaseReconciler(Generic[T]):
         while its a member of the `Controller`
         """
         interval = None
-        crd_inst = self.crd_type()(api=self.api)
         while not self._stop.is_set():
+            crd_inst = self.crd_type()(api=client.CustomObjectsApi())
             try:
-                self._load_latest(crd_inst)
+                latest = self.get(
+                    name=self._namespace_name[1],
+                    api_version=self.__group_version_info.api_version,
+                    kind=self.__group_version_info.kind,
+                    namespace=self._namespace_name[0],
+                    typ=object,
+                )
+                crd_inst.load_data(latest)
                 inst_logger, filt = reconciler_logger(
                     self.__group_version_info, crd_inst
                 )
@@ -215,7 +201,7 @@ class BaseReconciler(Generic[T]):
                 event_aware_sleep(self._stop, interval.total_seconds())
             else:
                 break
-        self._logger.debug("%s reconcile loop stopped", crd_inst)
+        self._logger.debug("%s reconcile loop stopped", self._namespace_name)
 
     def reconcile(
         self,
@@ -401,6 +387,7 @@ class BaseReconciler(Generic[T]):
                 "cannot start an already started reconciler",
                 f"{self.crd_type().__class__}-{self._namespace_name}",
             )
+        self.dynamic_api = dynamic.DynamicClient(self._api_client)
         loop_thread = threading.Thread(
             target=self.reconcilation_loop,
             daemon=True,
