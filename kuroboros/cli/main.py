@@ -371,6 +371,7 @@ def operator(name):
     dockerfile = new_dockerfile()
 
     create_file(".", "operator.toml", conf)
+    create_file(".", "requirements.txt", f"kuroboros=={VERSION_NUM}\n")
     create_file(".", "Dockerfile", dockerfile)
     create_file("controllers", "__init__.py", "")
 
@@ -391,11 +392,16 @@ def deploy(overlay):  # pylint: disable=redefined-outer-name
     multiple=True,
     help="Build arguments to pass to Docker (format: key=val). Can be specified multiple times.",
 )
-def build(build_arg):
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Supress stdout",
+)
+def build(build_arg, quiet):
     """
     Build the image
-
-    Build arguments to pass to Docker (format: key=val). Can be specified multiple times.
     """
     reg = KuroborosConfig.get("image", "registry", typ=str)
     repo = KuroborosConfig.get("image", "repository", typ=str)
@@ -413,9 +419,12 @@ def build(build_arg):
             raise click.BadParameter(
                 f"Invalid build-arg format: '{arg}', expected key=val"
             )
-    click.echo(f"🌀 Building Kuroboros Operator image with tag {img}")
-    docker_build(img, args=build_args)
-    click.echo("🌀 Done building Kuroboros Operator image")
+    if not quiet:
+        click.echo("🌀 Building operator image")
+    docker_build(img, args=build_args, quiet=quiet)
+    if not quiet:
+        click.echo("🌀 Done building operator image")
+    click.echo(img)
 
 
 @cli.command(help="Starts the Kuroboros Operator")

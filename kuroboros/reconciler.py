@@ -1,8 +1,12 @@
+from inspect import isclass
+import json
 from typing import (
+    Any,
     ClassVar,
     Generic,
     Type,
     TypeVar,
+    cast,
     get_args,
     get_origin,
 )
@@ -10,7 +14,7 @@ import threading
 from datetime import timedelta
 from logging import Logger
 import caseconverter
-from kubernetes import client
+from kubernetes import client, dynamic
 
 from kuroboros.exceptions import RetriableException, UnrecoverableException
 from kuroboros.group_version_info import GroupVersionInfo
@@ -19,6 +23,7 @@ from kuroboros.schema import BaseCRD
 from kuroboros.utils import NamespaceName, event_aware_sleep, with_timeout
 
 T = TypeVar("T", bound=BaseCRD)
+R = TypeVar("R", bound=Any)
 
 
 class BaseReconciler(Generic[T]):
@@ -33,6 +38,7 @@ class BaseReconciler(Generic[T]):
     _running: bool
     _loop_thread: threading.Thread
     _namespace_name: NamespaceName
+    _api_client: client.ApiClient
 
     reconcile_timeout: timedelta | None = None
     timeout_retry: bool = False
@@ -41,6 +47,7 @@ class BaseReconciler(Generic[T]):
     api: client.CustomObjectsApi
     crd_inst: T
     name: str
+    dynamic_api: dynamic.DynamicClient
 
     @classmethod
     def crd_type(cls) -> Type[T]:
@@ -79,6 +86,8 @@ class BaseReconciler(Generic[T]):
         )
         self._logger = self._logger.getChild(self.name)
         self._namespace_name = namespace_name
+        self._api_client = client.ApiClient()
+        self.dynamic_api = dynamic.DynamicClient(self._api_client)
 
     def __repr__(self) -> str:
         if self._namespace_name is not None:
@@ -104,6 +113,27 @@ class BaseReconciler(Generic[T]):
 
         latest = getter(**args)
         crd.load_data(latest)
+
+    def _deserialize(self, obj, typ):
+        if isclass(typ) and issubclass(typ, BaseCRD):
+            return typ(data=obj.to_dict())
+        return self._api_client.deserialize(
+            response=type("obj", (object,), {"data": json.dumps(obj.to_dict())}),
+            response_type=typ,
+        )
+
+    def _api_info_from_class(self, typ: Type):
+        api_version = None
+        kind = None
+        if isclass(typ) and issubclass(typ, BaseCRD):
+            gvi = typ.get_gvi()
+            assert gvi is not None
+            api_version = f"{gvi.group}/{gvi.api_version}"
+            kind = gvi.kind
+
+        self._logger.info(typ)
+        self._logger.info((api_version, kind))
+        return (api_version, kind)
 
     def reconcilation_loop(self):
         """
@@ -203,6 +233,164 @@ class BaseReconciler(Generic[T]):
         If its `None` it will never run again until further updates or a controller restart
         """
         return None
+
+    def get(
+        self,
+        name: str,
+        api_version: str | None = None,
+        kind: str | None = None,
+        namespace: str | None = None,
+        typ: Type[R] = object,
+    ) -> R:
+        """
+        Gets the resources in the cluster givcen its name and returns it deserialized.
+        `api_version` and `kind` can be obtained from `BaseCRD` subclasses
+
+        :param kind: the kind to get
+        :param api_version: the target group/version
+        :param namespace: the target namespace
+        :param name: the target name to retrieve
+        :param typ: the return type of the object
+
+        """
+        av, k = self._api_info_from_class(typ) or (api_version, kind)
+        return cast(
+            R,
+            self._deserialize(
+                self.dynamic_api.resources.get(api_version=av, kind=k).get(
+                    name=name, namespace=namespace
+                ),
+                typ,
+            ),
+        )
+
+    def get_list(
+        self,
+        api_version: str | None = None,
+        kind: str | None = None,
+        namespace: str | None = None,
+        typ: Type[R] = object,
+        **kwargs,
+    ) -> list[R]:
+        """
+        List the resources in the cluster givcen the kwargs and returns it deserialized.
+        `api_version` and `kind` can be obtained from `BaseCRD` subclasses
+
+        :param kind: the kind to list
+        :param api_version: the target group/version
+        :param namespace: the target namespace
+        :param typ: the return type of the list[]
+        :param **kwargs: extra arguments given to DynamicClient.get()
+
+        """
+        av, k = (
+            self._api_info_from_class(typ)
+            if (api_version, kind) == (None, None)
+            else (api_version, kind)
+        )
+        return [
+            cast(R, self._deserialize(el, typ))
+            for el in self.dynamic_api.resources.get(api_version=av, kind=k)
+            .get(namespace=namespace, **kwargs)
+            .items
+        ]
+
+    def create(
+        self,
+        body: dict,
+        kind: str | None = None,
+        api_version: str | None = None,
+        namespace: str | None = None,
+        typ: Type[R] = object,
+    ) -> R:
+        """
+        Creates the resource in the clsuter and returns it deserialized.
+        `api_version` and `kind` can be obtained from `BaseCRD` subclasses
+
+        :param body: The camelCased dictonary to create in the cluster
+        :param kind: the kind to create
+        :param api_version: the target group/version
+        :param namespace: the target namespace
+        :param typ: the return type
+        """
+        av, k = (
+            self._api_info_from_class(typ)
+            if (api_version, kind) == (None, None)
+            else (api_version, kind)
+        )
+        return cast(
+            R,
+            self._deserialize(
+                self.dynamic_api.resources.get(api_version=av, kind=k).create(
+                    namespace=namespace, body=body
+                ),
+                typ,
+            ),
+        )
+
+    def patch(
+        self,
+        patch_body: dict,
+        name: str,
+        kind: str | None = None,
+        api_version: str | None = None,
+        namespace: str | None = None,
+        typ: Type[R] = object,
+        **kwargs,
+    ) -> R:
+        """
+        Patch the resource in the clsuter and returns it deserialized.
+        `api_version` and `kind` can be obtained from `BaseCRD` subclasses
+
+        :param patch_body: The camelCased dictonary to create in the cluster
+        :param kind: the kind to create
+        :param api_version: the target group/version
+        :param namespace: the target namespace
+        :param typ: the return type
+        :param **kwargs: extra arguments given to DynamicClient.patch()
+
+        """
+        av, k = (
+            self._api_info_from_class(typ)
+            if (api_version, kind) == (None, None)
+            else (api_version, kind)
+        )
+        return cast(
+            R,
+            self._deserialize(
+                self.dynamic_api.resources.get(api_version=av, kind=k).patch(
+                    namespace=namespace, name=name, body=patch_body, **kwargs
+                ),
+                typ,
+            ),
+        )
+
+    def delete(
+        self,
+        name: str,
+        api_version: str | None = None,
+        kind: str | None = None,
+        namespace: str | None = None,
+        typ: Type = type(None),
+        **kwargs,
+    ):
+        """
+        Deletes a resource in the clsuter.
+        `api_version` and `kind` can be obtained from `BaseCRD` subclasses
+
+        :param kind: the kind to create
+        :param api_version: the target group/version
+        :param namespace: the target namespace
+        :param typ: the return type
+        """
+        av, k = (
+            self._api_info_from_class(typ)
+            if (api_version, kind) == (None, None)
+            else (api_version, kind)
+        )
+        self.dynamic_api.resources.get(api_version=av, kind=k).delete(
+            namespace=namespace, name=name, **kwargs
+        )
 
     def start(self):
         """

@@ -26,10 +26,7 @@ class KuroborosConfig:
             "name": "kuroboros-operator",
             "leader_acquire_interval_seconds": 10.0,
             "log_level": "INFO",
-            "controllers": {
-                "cleanup_interval_seconds": 5.0,
-                "retry_backoff_seconds": 5.0,
-            },
+            "cleanup_interval_seconds": 5.0,
             "metrics": {
                 "interval_seconds": 5.0,
                 "port": 8080,

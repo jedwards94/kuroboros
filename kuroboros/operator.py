@@ -238,7 +238,7 @@ class Operator:
 
         # Add Controllers from controller configs
         for ctrl in controllers:
-            self._logger.info(f"adding {ctrl.name}")
+            self._logger.debug(f"adding {ctrl.name} controller")
             run_version = ctrl.get_run_version()
             if run_version.reconciler is None:
                 raise RuntimeError(
@@ -254,7 +254,7 @@ class Operator:
                     mutation_webhook=run_version.mutation_webhook,
                 )
 
-            except Exception as e:  # pylint: disable=broad-except
+            except RuntimeError as e:
                 self._logger.warning(e)
                 continue
 

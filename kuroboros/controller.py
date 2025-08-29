@@ -132,10 +132,11 @@ class Controller:
             )
 
         self._cleanup_interval = KuroborosConfig.get(
-            "operator", "controllers", "cleanup_interval_seconds", typ=float
+            "operator", "cleanup_interval_seconds", typ=float
         )
         self._group_version_info = group_version_info
-        self.name = f"{caseconverter.pascalcase(name)}{group_version_info.pretty_version_str()}Controller"
+        pascal_name = caseconverter.pascalcase(name)
+        self.name = f"{pascal_name}{group_version_info.pretty_version_str()}Controller"
         self._logger = self._logger.getChild(self.name)
         self._check_permissions()
         self.reconciler = reconciler

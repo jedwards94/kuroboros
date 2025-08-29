@@ -2,7 +2,7 @@ import docker
 from docker.errors import BuildError, APIError
 
 
-def docker_build(image: str, args: dict[str, str] | None = None) -> None:
+def docker_build(image: str, args: dict[str, str] | None = None, quiet: bool = False) -> None:
     """
     Builds a Docker image with given build-args and image tag
     """
@@ -14,7 +14,7 @@ def docker_build(image: str, args: dict[str, str] | None = None) -> None:
 
     try:
         build_generator = low_level_client.build(
-            path=".", tag=image, buildargs=args, rm=True, decode=True
+            path=".", tag=image, buildargs=args, rm=True, decode=True, quiet=quiet
         )
 
         for chunk in build_generator:
@@ -30,10 +30,8 @@ def docker_build(image: str, args: dict[str, str] | None = None) -> None:
                 elif "aux" in chunk:
                     print(f"Final Image ID: {chunk['aux']['ID']}")
 
-        print("\nBuild succeeded!")
-
     except BuildError as e:
-        print("\nBuild failed: {e.msg}")
+        print(f"\nBuild failed: {e.msg}")
         if e.build_log:
             for entry in e.build_log:
                 print(entry.get("stream", "").strip())
