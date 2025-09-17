@@ -35,6 +35,7 @@ class KuroborosConfig:
                 "port": 443,
                 "cert_path": "/etc/tls/tls.crt",
                 "key_path": "/etc/tls/tls.key",
+                "gunicorn_workers": 1,
             },
         },
         "image": {
@@ -46,7 +47,7 @@ class KuroborosConfig:
     }
 
     @classmethod
-    def get(cls, *keys, typ: Type[T] = cast(Type[T], None)) -> T:
+    def get(cls, *keys: *tuple[str, ...], typ: Type[T] = cast(Type[T], None)) -> T:
         """
         Gets a config field from the toml field and optionally casts it to the given type.
         """
@@ -93,7 +94,7 @@ class KuroborosConfig:
             if toml_config is not None:
                 cls._config = cls._merge(cls._config, toml_config)
         except FileNotFoundError:
-            return
+            pass
 
     @classmethod
     def dumps(cls, key: str) -> str:

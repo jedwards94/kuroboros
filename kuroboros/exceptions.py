@@ -1,21 +1,11 @@
-from datetime import timedelta
-
-
-class UnrecoverableException(Exception):
-    """
-    An unrecoverable exception that will cause the reonciliation loop
-    to stop
-    """
-
-
 class RetriableException(Exception):
     """
     An retriable exception that will cause the reonciliation loop
     to try agains in a defined backoof
     """
-    backoff: timedelta
+    backoff: float
 
-    def __init__(self, backoff: timedelta, *args: object) -> None:
+    def __init__(self, backoff: float, *args: object) -> None:
         self.backoff = backoff
         super().__init__(*args)
 

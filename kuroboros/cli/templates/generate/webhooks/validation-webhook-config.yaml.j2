@@ -23,7 +23,7 @@ webhooks:
         resources:
           - {{ wh.plural }}
         scope: {{ wh.scope }}
-    admissionReviewVersions: [ {{ wh.api_version }} ]
+    admissionReviewVersions: [ "v1" ]
     sideEffects: None
     failurePolicy: Fail
 {%- endfor %}

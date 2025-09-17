@@ -1,13 +1,14 @@
 [operator]
 name = "{{ name }}"
 # leader_acquire_interval_seconds = 10
-# pending_remove_interval_seconds = 5
+# cleanup_interval_seconds = 5
 
-## Your SSL Config
+## Webhook Server Options
 # [operator.webhook_server]
 # port = 443
-# cert_path = ""
-# key_path = ""
+# cert_path = "/etc/tls/tls.crt"
+# key_path = "/etc/tls/tls.key"
+# gunicorn_workers = 1
 
 ## Operator Metrics
 # [operator.metrics]

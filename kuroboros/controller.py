@@ -1,5 +1,5 @@
 from logging import Logger
-from typing import Any, Dict, List, MutableMapping, Tuple, Type, cast
+from typing import Any, Dict, Generator, List, MutableMapping, Tuple, Type, cast
 import time
 import threading
 import caseconverter
@@ -7,9 +7,10 @@ from kubernetes import client, watch
 
 from kuroboros import logger
 from kuroboros.config import KuroborosConfig
+from kuroboros.extended_api import ExtendedApi, ExtendedClient
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
-from kuroboros.schema import BaseCRD
+from kuroboros.schema import CRDSchema
 from kuroboros.utils import NamespaceName, event_aware_sleep
 from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook
 
@@ -31,7 +32,7 @@ class ControllerConfigVersions:
 
     name: str
     reconciler: Type[BaseReconciler] | None = None
-    crd: Type[BaseCRD] | None = None
+    crd: Type[CRDSchema] | None = None
     validation_webhook: Type[BaseValidationWebhook] | None = None
     mutation_webhook: Type[BaseMutationWebhook] | None = None
 
@@ -91,7 +92,7 @@ class Controller:
     """
 
     _cleanup_interval: float
-    _logger: Logger = logger.root_logger.getChild(__name__)
+    _logger: Logger
     _members: MutableMapping[NamespaceName, BaseReconciler]
     _pending_remove: List[NamespaceName]
     _group_version_info: GroupVersionInfo
@@ -99,7 +100,8 @@ class Controller:
     _watcher: watch.Watch
     _watcher_loop: threading.Thread
     _cleanup_loop: threading.Thread
-    _api: client.CustomObjectsApi
+    _api_client: ExtendedClient
+    _extended_api: ExtendedApi
 
     reconciler: Type[BaseReconciler]
     validation_webhook: BaseValidationWebhook | None
@@ -136,12 +138,11 @@ class Controller:
         )
         self._group_version_info = group_version_info
         pascal_name = caseconverter.pascalcase(name)
-        self.name = f"{pascal_name}{group_version_info.pretty_version_str()}Controller"
-        self._logger = self._logger.getChild(self.name)
+        self.name = f"{pascal_name}{group_version_info.pversion()}Controller"
+        self._logger = logger.root_logger.getChild(__name__).getChild(self.name)
         self._check_permissions()
         self.reconciler = reconciler
-        self.reconciler.api = client.CustomObjectsApi()
-        self._api = client.CustomObjectsApi()
+        self._api_client = ExtendedClient()
         self._members = {}
         self._pending_remove = []
         self.validation_webhook = (
@@ -186,7 +187,7 @@ class Controller:
         """
         if namespace_name not in self._members:
             reconciler = self.reconciler(namespace_name)
-            reconciler.start()
+            reconciler.start(extended_api=self._extended_api)
             self._members[namespace_name] = reconciler
             self._logger.info(
                 "%s added as member",
@@ -195,7 +196,7 @@ class Controller:
         else:
             if self._members[namespace_name].is_running():
                 return
-            self._members[namespace_name].start()
+            self._members[namespace_name].start(extended_api=self._extended_api)
 
     def _add_pending_remove(self, namespace_name: NamespaceName):
         """
@@ -206,7 +207,7 @@ class Controller:
         self._pending_remove.append(namespace_name)
         self._logger.info(
             "%s CR added as pending_remove",
-            self._group_version_info.pretty_kind_str(namespace_name),
+            self._group_version_info.pkind(namespace_name),
         )
 
     def _remove_member(self, namespace_name: NamespaceName):
@@ -219,45 +220,40 @@ class Controller:
         self._members.pop(namespace_name)
         self._logger.info(
             "%s CR removed",
-            self._group_version_info.pretty_kind_str(namespace_name),
+            self._group_version_info.pkind(namespace_name),
         )
 
-    def _get_current_cr_list(self, api: client.CustomObjectsApi) -> List[Any]:
+    def _get_current_cr_list(self) -> List[Any]:
         """
         Gets the current list of objects in the cluster
         """
-        current_cr_resp = api.list_cluster_custom_object(
+        return self._extended_api.get(
+            kind=self._group_version_info.kind,
+            api_version=f"{self._group_version_info.group}/{self._group_version_info.api_version}",
+            klass=list[object],
+        )
+
+    def _stream_events(
+        self,
+        watcher: watch.Watch,
+    ) -> Generator[Any | dict | str, str, None]:
+        """
+        Wrapper to `kubernetes.watch.Watch().stream()`
+        """
+        cr_api = client.CustomObjectsApi()
+        return watcher.stream(
+            cr_api.list_cluster_custom_object,
             group=self._group_version_info.group,
             version=self._group_version_info.api_version,
             plural=self._group_version_info.plural,
         )
-        return current_cr_resp["items"]
-
-    def _stream_events(
-        self,
-        api: client.CustomObjectsApi,
-        watcher: watch.Watch,
-    ) -> Dict[Any, Any]:
-        """
-        Wrapper to `kubernetes.watch.Watch().stream()`
-        """
-        return cast(
-            Dict[Any, Any],
-            watcher.stream(
-                api.list_cluster_custom_object,
-                group=self._group_version_info.group,
-                version=self._group_version_info.api_version,
-                plural=self._group_version_info.plural,
-            ),
-        )
 
     def _preload_existing_cr(self):
         self._logger.info(
-            "preloading existing %s CRs", self._group_version_info.pretty_kind_str()
+            "preloading existing %s CRs", self._group_version_info.pkind()
         )
         try:
-            api = client.CustomObjectsApi()
-            current_crs = self._get_current_cr_list(api)
+            current_crs = self._get_current_cr_list()
             for pending in current_crs:
                 crd_namespace_name = (
                     pending["metadata"].get("namespace", None),
@@ -267,12 +263,12 @@ class Controller:
             self._logger.info(
                 "preloaded %d %s CR(s)",
                 len(current_crs),
-                self._group_version_info.pretty_kind_str(),
+                self._group_version_info.pkind(),
             )
         except Exception as e:
             self._logger.error(
                 "error while preloading %s CR: %s",
-                self._group_version_info.pretty_kind_str(),
+                self._group_version_info.pkind(),
                 e,
                 exc_info=True,
             )
@@ -285,14 +281,14 @@ class Controller:
         """
         self._logger.info(
             "watching %s CRs pending to remove",
-            self._group_version_info.pretty_kind_str(),
+            self._group_version_info.pkind(),
         )
         while not self._stop.is_set():
             for namespace, name in self._pending_remove:
                 self._logger.info(
                     "%d %s CRs pending to remove",
                     len(self._pending_remove),
-                    self._group_version_info.pretty_kind_str(),
+                    self._group_version_info.pkind(),
                 )
 
                 try:
@@ -301,12 +297,12 @@ class Controller:
                         self._pending_remove.remove((namespace, name))
                         self._logger.info(
                             "%s CR no longer found, removed",
-                            self._group_version_info.pretty_kind_str((namespace, name)),
+                            self._group_version_info.pkind((namespace, name)),
                         )
                 except client.ApiException as e:
                     self._logger.error(
                         "unexpected api error ocurred while watching pending_remove %s CR: %s",
-                        self._group_version_info.pretty_kind_str((namespace, name)),
+                        self._group_version_info.pkind((namespace, name)),
                         e,
                         exc_info=True,
                     )
@@ -318,12 +314,11 @@ class Controller:
         Adds the member if its `ADDED` or `MODIFIED` and removes them when `DELETED`
         """
         self._logger.info(
-            "starting to watch %s events", self._group_version_info.pretty_kind_str()
+            "starting to watch %s events", self._group_version_info.pkind()
         )
         self._watcher = watch.Watch()
-        api = client.CustomObjectsApi()
         try:
-            for event in self._stream_events(api, self._watcher):
+            for event in self._stream_events(self._watcher):
                 if self._stop.is_set():
                     self._watcher.stop()
                     break
@@ -353,7 +348,7 @@ class Controller:
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     self._logger.warning(
                         "an Exception ocurred while streaming %s events: %s",
-                        self._group_version_info.pretty_kind_str(),
+                        self._group_version_info.pkind(),
                         e,
                         exc_info=True,
                     )
@@ -361,34 +356,27 @@ class Controller:
         except Exception as e:  # pylint: disable=broad-exception-caught
             self._logger.error(
                 "error while watching %s: %s",
-                self._group_version_info.pretty_kind_str(),
+                self._group_version_info.pkind(),
                 e,
                 exc_info=True,
             )
         finally:
             self._logger.info(
                 "no longer watching events from %s",
-                self._group_version_info.pretty_kind_str(),
+                self._group_version_info.pkind(),
             )
             self._watcher.stop()
 
     def _cr_exists(self, name: str, namespace: str | None = None) -> bool:
-        namespaced = self._group_version_info.is_namespaced()
-        getter = None
-        args = {
-            "group": self._group_version_info.group,
-            "version": self._group_version_info.api_version,
-            "plural": self._group_version_info.plural,
-            "name": name,
-        }
-        if namespaced:
-            assert namespace is not None
-            args["namespace"] = namespace
-            getter = self._api.get_namespaced_custom_object_with_http_info
-        else:
-            getter = self._api.get_cluster_custom_object_with_http_info
         try:
-            getter(**args)
+            group = self._group_version_info.group
+            api_version = self._group_version_info.api_version
+            self._extended_api.get(
+                kind=self._group_version_info.kind,
+                api_version=f"{group}/{api_version}",
+                name=name,
+                namespace=namespace,
+            )
         except client.ApiException as e:
             if e.status == 404:
                 return False
@@ -400,11 +388,12 @@ class Controller:
         Starts the controller.
         Pre-load the current CRs in the cluster ands start both watcher and cleanup threads.
         """
+        self._extended_api = ExtendedApi(api_client=self._api_client)
         self._watcher_loop = threading.Thread(
-            target=self._watch_cr_events, name=f"{self.name}-watcher", daemon=True
+            target=self._watch_cr_events, name=f"{self.name}::Watcher", daemon=True
         )
         self._cleanup_loop = threading.Thread(
-            target=self._watch_pending_remove, name=f"{self.name}-cleanup", daemon=True
+            target=self._watch_pending_remove, name=f"{self.name}::Cleanup", daemon=True
         )
 
         self._preload_existing_cr()
@@ -429,7 +418,7 @@ class Controller:
         for namespace_name, member in self._members.items():
             self._logger.debug(
                 "sending stop event to %s",
-                self._group_version_info.pretty_kind_str(namespace_name),
+                self._group_version_info.pkind(namespace_name),
             )
             member.stop()
             wait_for_stop.append(member)

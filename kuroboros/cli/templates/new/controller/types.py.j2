@@ -3,19 +3,27 @@ Remember to run
 `kuroboros generate crd`
 after modfying this file
 """
-from kuroboros.schema import BaseCRD, BaseCRDProp, prop
+from kubernetes.client import V1ObjectMeta
+from kuroboros.schema import CRDSchema, OpenAPISchema, prop
 
 
-class {{ kind }}Status(BaseCRDProp):
+class {{ kind }}Spec(OpenAPISchema):
+    """
+    TODO: Define {{ kind }} spec properties
+    """
+
+class {{ kind }}Status(OpenAPISchema):
     """
     TODO: Define {{ kind }} status properties
     """
 
-class {{ kind }}(BaseCRD):
+class {{ kind }}(CRDSchema):
     """ 
-    TODO: Add {{ kind }} specs here!
-    remember to use something like
-    
-    image_tag = prop(str, default="redis")
+    TODO: Add {{ kind }} definition
     """
+    kind = prop(str)
+    api_version = prop(str)
+    metadata = prop(V1ObjectMeta)
+    
+    spec = prop({{ kind }}Spec)
     status = prop({{ kind }}Status)

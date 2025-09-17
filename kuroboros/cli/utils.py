@@ -11,7 +11,7 @@ from kuroboros.controller import ControllerConfig, ControllerConfigVersions
 from kuroboros.exceptions import MultipleDefinitionsException
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
-from kuroboros.schema import BaseCRD
+from kuroboros.schema import CRDSchema
 from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook
 
 
@@ -30,8 +30,6 @@ def yaml_format(value):
             float(value)
             return f'"{value}"'  # Quote numeric-looking strings
         except ValueError:
-            if "\n" in value:
-                return f"|-\n    {value}"
             # Quote strings with colons, spaces, etc.
             if any(c in value for c in ":[]{}, "):
                 return f'"{value}"'
@@ -138,7 +136,7 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
             group_version_module = importlib.import_module(
                 f"{controllers_path}.{controller}.group_version"
             )
-        except Exception:  # pylint: disable=broad-except
+        except ModuleNotFoundError:
             # If we dont find any GVI we skip this controller, as its not a controller (?)
             continue
         group_version = None
@@ -162,23 +160,27 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
             # posibly validation and mutation webhook
             ctrl_versions = ControllerConfigVersions()
             ctrl_versions.name = version
-            version_dir = Path(os.path.join(versions_path, version))
-            patterns = ["crd.py", "reconciler.py", "validation.py", "mutation.py"]
-            python_files = []
-            for pattern in patterns:
-                python_files.extend(version_dir.glob(pattern))
+            modules = [
+                {"name": "crd", "required": True},
+                {"name": "reconciler", "required": True},
+                {"name": "mutation", "required": False},
+                {"name": "validation", "required": False},
+            ]
 
-            for file in python_files:
-                module_name = file.stem
-                if module_name == "__init__":
+            for module_conf in modules:
+                module_name = module_conf["name"]
+                module = None
+                try:
+                    module = importlib.import_module(
+                        f"{controllers_path}.{controller}.{version}.{module_name}"
+                    )
+                except ModuleNotFoundError as e:
+                    if module_conf["required"]:
+                        raise e
                     continue
 
-                module = importlib.import_module(
-                    f"{controllers_path}.{controller}.{version}.{module_name}"
-                )
+                assert module is not None
                 for _, obj in inspect.getmembers(module, inspect.isclass):
-                    if obj.__module__ != module.__name__:
-                        continue
                     if (
                         module_name == "reconciler"
                     ):  # Load reconciler from reconciler.py
@@ -190,7 +192,7 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                             obj.set_gvi(group_version)
                             ctrl_versions.reconciler = obj
                     elif module_name == "crd":  # Load CRD from crd.py
-                        if BaseCRD in obj.__bases__:
+                        if CRDSchema in obj.__bases__:
                             if ctrl_versions.crd is not None:
                                 raise MultipleDefinitionsException(
                                     ctrl_versions.crd, controller, version

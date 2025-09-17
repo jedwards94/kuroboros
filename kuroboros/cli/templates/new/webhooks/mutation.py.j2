@@ -1,14 +1,16 @@
-from kuroboros.webhook import BaseMutationWebhook
+from kuroboros.webhook import BaseMutationWebhook, Request, OperationsEnum
 
 from {{ module }}.crd import {{ kind }}
 
 class {{ kind }}Mutation(BaseMutationWebhook[{{ kind }}]):
 
     # Modify this class variable to register your
-    # webhook on this actions
-    register_on = ["CREATE", "UPDATE"]
+    # webhook on this operations
+    register_on = [OperationsEnum.CREATE, OperationsEnum.UPDATE]
 
-    def mutate(self, data: {{ kind }}) -> {{ kind }}:
+    def mutate(self, request: Request[{{ kind }}]) -> {{ kind }}:
         """
         TODO: Implement mutation logic
         """
+        assert request.object is not None
+        return request.object

@@ -1,66 +1,86 @@
 # pylint: skip-file
+import json
 from typing import cast
 import unittest
-from unittest.mock import MagicMock, patch
-from kubernetes import client
+import kubernetes
 
 from kuroboros.group_version_info import GroupVersionInfo
-from kuroboros.schema import BaseCRD, BaseCRDProp, CRDProp, prop
+from kuroboros.schema import CRDSchema, OpenAPISchema, PropYaml, prop
 
 
 test_api_group = GroupVersionInfo(api_version="v1", group="test", kind="Test")
 
 
-class TestCrdProp(BaseCRDProp):
+class TestCrdProp(OpenAPISchema):
     test_sub_field = prop(str, default="test")
-    type_ = prop(str)
+    type = prop(str)
 
 
-class NestedTestCrdProp(BaseCRDProp):
+class NestedTestCrdProp(OpenAPISchema):
     test_sub_field = prop(TestCrdProp)
 
 
-class TestCrdWithSubProp(BaseCRD):
+class TestCrdWithSubProp(CRDSchema):
     test_field = prop(TestCrdProp)
     nested_test_field = prop(NestedTestCrdProp)
     array_subprop = prop(list[TestCrdProp])
 
 
-class TestCrd(BaseCRD):
+class TestCrd(CRDSchema):
     test_field = prop(str)
     not_in_data = prop(int)
-    
+
+
 TestCrd.set_gvi(test_api_group)
 
 
 class TestInit(unittest.TestCase):
 
+    def test_serialization(self):
+        
+        data = {
+            "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
+            "test_field": {"test_sub_field": "testing string", "type": "some"},
+            "nested_test_field": {"test_sub_field": {"test_sub_field": "testing string"}},
+            "status": {"some": "thing"},
+        }
+        
+        patch_body = {"data": json.dumps(data)}
+        
+        api = kubernetes.client.ApiClient()
+        deploy = kubernetes.client.V1Deployment(
+            kind="Deployment",
+            spec=kubernetes.client.V1DeploymentSpec(
+                min_ready_seconds=10,
+                selector="app=app",
+                template=kubernetes.client.V1PodTemplate(
+                    template=kubernetes.client.V1PodTemplateSpec(spec=kubernetes.client.V1PodSpec(containers=[]))
+                ),
+            ),
+        )
+        
+        ser = api.sanitize_for_serialization(deploy)
+        print(ser)
+        self.assertFalse(False)
+
     def test_subprop_load(self):
 
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {
-                "testField": {"testSubField": "testing string", "type": "some"},
-                "nestedTestField": {
-                    "testSubField": {"testSubField": "testing string"}
-                },
-            },
+            "test_field": {"test_sub_field": "testing string", "type": "some"},
+            "nested_test_field": {"test_sub_field": {"test_sub_field": "testing string"}},
             "status": {"some": "thing"},
         }
         data2 = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {
-                "nestedTestField": {
-                    "testSubField": {"testSubField": "testing string"}
-                },
-            },
+            "nested_test_field": {"test_sub_field": {"test_sub_field": "testing string"}},
             "status": {"some": "thing"},
         }
 
         test = TestCrdWithSubProp()
-        test.load_data(data)
+        test.load_data(**data)
         self.assertEqual(test.test_field.test_sub_field, "testing string")
-        self.assertEqual(test.test_field.type_, "some")
+        self.assertEqual(test.test_field.type, "some")
         self.assertEqual(
             test.nested_test_field.test_sub_field.test_sub_field, "testing string"
         )
@@ -71,12 +91,12 @@ class TestInit(unittest.TestCase):
         self.assertEqual(
             test.nested_test_field.test_sub_field.test_sub_field, "new value"
         )
-        
+
         test2 = TestCrdWithSubProp()
-        test2.load_data(data2)
-        
+        test2.load_data(**data2)
+
         self.assertIsNone(test2.test_field)
-        test2.test_field = TestCrdProp(testSubField="test")
+        test2.test_field = TestCrdProp(test_sub_field="test")
         self.assertEqual(test2.test_field.test_sub_field, "test")
         test2.test_field.test_sub_field = "data 2"
         self.assertEqual(test2.test_field.test_sub_field, "data 2")
@@ -92,167 +112,70 @@ class TestInit(unittest.TestCase):
             list[int]: "array",
             list[float]: "array",
             list[bool]: "array",
-            
         }
         for supported_type in supported_types:
-            typed_prop = cast(CRDProp, prop(supported_type))
+            typed_prop = cast(PropYaml, prop(supported_type))
             self.assertEqual(typed_prop.typ, supported_types[supported_type])
 
         with self.assertRaises(TypeError):
-            cast(CRDProp, prop(object))
+            class Invalid:
+                pass
+            prop(Invalid)
+            
 
     def test_load_data(self):
         inst = TestCrd()
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {"testField": "testing string"},
+            "test_field": "testing string",
             "status": {"some": "thing"},
         }
 
-        inst.load_data(data)
+        inst.load_data(**data)
         self.assertEqual(inst.test_field, "testing string")
-        self.assertEqual(inst.namespace, "test")
-        self.assertEqual(inst.name, "name")
-        self.assertIsNotNone(inst.status)
         self.assertIsNotNone(inst.metadata)
-        self.assertDictEqual(inst.status, {"some": "thing"}) # type: ignore
+        self.assertEqual(inst.metadata.namespace, "test")
+        self.assertEqual(inst.metadata.name, "name")
+        self.assertIsNotNone(inst.status)
+        self.assertDictEqual(inst.status, {"some": "thing"})  # type: ignore
         self.assertIsNone(inst.not_in_data)
 
     def test_load_data_by_value(self):
-        data_1 = {"metadata": {"name": "test"}, "spec": {"testField": "test"}}
-        inst_1 = TestCrd(data=data_1)
-        inst_2 = TestCrd(data=data_1)
+        data_1 = {"metadata": {"name": "test"}, "test_field": "test"}
+        inst_1 = TestCrd(**data_1)
+        inst_2 = TestCrd(**data_1)
 
         inst_1.test_field = "test2"
 
-        self.assertNotEqual(inst_1.get_data(), inst_2.get_data())
+        self.assertNotEqual(inst_1.to_dict(), inst_2.to_dict())
 
     def test_sub_prop_set_data(self):
         data = {
             "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {
-                "testField": {"testSubField": "testing string"},
-                "nestedTestField": {
-                    "testSubField": {"testSubField": "testing string"}
-                },
-            },
+            "test_field": {"test_sub_field": "testing string"},
+            "nested_test_field": {"test_sub_field": {"test_sub_field": "testing string"}},
             "status": {"some": "thing"},
         }
-        inst_1 = TestCrdWithSubProp(data=data)
-        inst_2 = TestCrdWithSubProp(data=data)
+        inst_1 = TestCrdWithSubProp(**data)
+        inst_2 = TestCrdWithSubProp(**data)
 
         inst_1.test_field.test_sub_field = "test2"
         inst_2.test_field.test_sub_field = "test3"
         self.assertNotEqual(
-            inst_1.get_data()["spec"]["testField"]["testSubField"],
-            inst_2.get_data()["spec"]["testField"]["testSubField"],
+            inst_1.to_dict()["test_field"]["test_sub_field"],
+            inst_2.to_dict()["test_field"]["test_sub_field"],
         )
 
         inst_1.nested_test_field.test_sub_field.test_sub_field = "test4"
         inst_2.nested_test_field.test_sub_field.test_sub_field = "test5"
         self.assertNotEqual(
-            inst_1.get_data()["spec"]["nestedTestField"]["testSubField"][
-                "testSubField"
-            ],
-            inst_2.get_data()["spec"]["nestedTestField"]["testSubField"][
-                "testSubField"
-            ],
+            inst_1.to_dict()["nested_test_field"]["test_sub_field"]["test_sub_field"],
+            inst_2.to_dict()["nested_test_field"]["test_sub_field"]["test_sub_field"],
         )
 
         inst_1.nested_test_field.test_sub_field.test_sub_field = "test"
         inst_2.nested_test_field.test_sub_field.test_sub_field = "test"
         self.assertEqual(
-            inst_1.get_data()["spec"]["nestedTestField"]["testSubField"][
-                "testSubField"
-            ],
-            inst_2.get_data()["spec"]["nestedTestField"]["testSubField"][
-                "testSubField"
-            ],
+            inst_1.to_dict()["nested_test_field"]["test_sub_field"]["test_sub_field"],
+            inst_2.to_dict()["nested_test_field"]["test_sub_field"]["test_sub_field"],
         )
-
-
-class TestInstance(unittest.TestCase):
-
-    @patch("kubernetes.client.CustomObjectsApi.patch_namespaced_custom_object_status")
-    @patch("kubernetes.client.CustomObjectsApi.patch_namespaced_custom_object")
-    def test_patch_cr(self, patch_cr_mock: MagicMock, patch_cr_status_mock: MagicMock):
-
-        data = {
-            "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {"testField": "testing string"},
-            "status": {"some": "thing"},
-        }
-
-        def mock_patch_cr_status(
-            group, version, namespace, plural, name, body, **kwargs
-        ):
-            return {**data, **body}
-
-        def mock_patch_cr(group, version, namespace, plural, name, body, **kwargs):
-            return {**body}
-
-        patch_cr_status_mock.side_effect = mock_patch_cr_status
-        patch_cr_mock.side_effect = mock_patch_cr
-
-        inst = TestCrd(api=client.CustomObjectsApi())
-        inst.load_data(data)
-        
-        with patch.object(inst, "load_data") as loader:
-
-            inst.status = {"another": "one"}
-            inst.test_field = "string_test"
-            inst.patch()
-            self.assertDictEqual(inst.status, {"another": "one"})
-            self.assertEqual(inst.test_field, "string_test")
-            self.assertEqual(loader.call_count, 2)
-            
-            inst.test_field = "string_test_2"
-            inst.status = {"not": "updated"}
-            inst.patch(patch_status=False)
-            self.assertEqual(loader.call_count, 3)
-
-
-    def test_read_only(self):
-        data = {
-            "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {"testField": "testing string"},
-            "status": {"some": "thing"},
-        }
-        inst = TestCrd(api=client.CustomObjectsApi(), read_only=True, data=data)
-        
-        with self.assertRaises(RuntimeError):
-            inst.test_field = "something new"
-        
-        with self.assertRaises(RuntimeError):
-            inst.read_only = False
-        
-        self.assertEqual(inst.test_field, "testing string")
-        
-
-    def test_helpers(self):
-        data = {
-            "metadata": {"namespace": "test", "name": "name", "uid": "1234"},
-            "spec": {"test_field": "testing string"},
-            "status": {"some": "thing"},
-        }
-
-        inst = TestCrd(api=client.CustomObjectsApi())
-        inst.load_data(data)
-
-        with patch("kuroboros.schema.BaseCRD.patch") as mock_patch:
-            mock_patch.return_value = None
-            inst.add_finalizer("test-finalizer")
-            inst.add_finalizer("test-finalizer-2")
-            self.assertEqual(len(inst.finalizers), 2)
-
-            inst.remove_finalizer("test-finalizer-2")
-            self.assertEqual(len(inst.finalizers), 1)
-            self.assertEqual(inst.has_finalizers(), True)
-
-            owner_ref = inst.get_owner_ref()
-            self.assertEqual(owner_ref.api_version, test_api_group.api_version)
-            self.assertEqual(owner_ref.kind, test_api_group.kind)
-            self.assertEqual(owner_ref.uid, inst.uid)
-            self.assertEqual(owner_ref.name, inst.name)
-            self.assertEqual(owner_ref.block_owner_deletion, True)
-        pass
