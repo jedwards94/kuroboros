@@ -34,6 +34,13 @@ def new_dockerfile():
     dockerfile_template = temps.env.get_template("new/project/docker.j2")
     return dockerfile_template.render(python_version=version)
 
+def new_pyproject(name, version) -> str:
+    """
+    Creates the pyproject.toml file of the operator
+    """
+    pyproject_template = temps.env.get_template("new/project/pyproject.toml.j2")
+    return pyproject_template.render(name=name, kuroboros_version=version)
+
 
 def new_group_versions(version: str, group: str, kind: str):
     """

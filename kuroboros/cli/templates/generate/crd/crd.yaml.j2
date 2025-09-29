@@ -34,9 +34,14 @@ required: []
     {%- endif %}
   {%- endif %}
   {%- for key in prop.args %}
+  {%- if prop.args[key] is string and '\n' in prop.args[key] %}
+  {{ key | maybekebab }}: |-
+    {{ prop.args[key] | indent(4) }}
+  {%- else %}
   {{ key | maybekebab }}: {{ prop.args[key] | yaml }}
+  {%- endif %}
   {%- endfor %}
-  {%- if prop.subprops is not none %}
+  {%- if prop.subprops is not none and prop.subprops|length > 0 %}
   {{- get_required(prop.subprops) | indent(2) }}
   properties:
     {%- for subprop_name in prop.subprops %}
@@ -88,38 +93,18 @@ spec:
     schema:
       openAPIV3Schema:
         {%- if version in version_desc %}
+          {%- if version_desc[version] is string and '\n' in version_desc[version] %}
         description: |-
-          {{ version_desc[version] | indent(12) }}
+          {{ version_desc[version] | indent(10) }}
+          {%- else %}
+        description: {{ version_desc[version] | yaml }}
+          {%- endif %}
         {%- endif %}
         type: object
+        {%- if props|length > 0 %}
         properties:
-          apiVersion:
-            type: string
-            description: |-
-              APIVersion defines the versioned schema of this representation 
-              of an object.
-              Servers should convert recognized schemas to the latest internal value, and
-              may reject unrecognized values.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
-          kind:
-            type: string
-            description: |-
-              Kind is a string value representing the REST resource this object represents.
-              Servers may infer this from the endpoint the client submits requests to.
-              Cannot be updated.
-              In CamelCase.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-          metadata:
-            type: object
-          {{- render_prop("status", status) | indent(10) }}
-          spec:
-            type: object
-            description: |-
-              Specification of the desired state of the {{ gvi.kind }} resource.
-              More Info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status
-            properties:
-            {%- for prop_name in props %}
-            {{- render_prop(prop_name, props[prop_name]) | indent(14) }}
-            {%- endfor %}
-            {{- get_required(props) | indent(12) }}
+          {%- for prop_name in props %}
+          {{- render_prop(prop_name, props[prop_name]) | indent(10) }}
+          {%- endfor %}
+        {%- endif %}
   {%- endfor %}

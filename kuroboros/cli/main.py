@@ -5,7 +5,7 @@ import sys
 
 import click
 
-from kuroboros.cli.build import docker_build
+from kuroboros.cli.build import build_operator_image
 from kuroboros.cli.generate import (
     crd_schema,
     kustomize_file,
@@ -28,11 +28,12 @@ from kuroboros.cli.new import (
     new_dockerfile,
     new_group_versions,
     new_mutation_webhook,
+    new_pyproject,
     new_reconciler,
     new_validation_webhook,
 )
 from kuroboros.cli.deploy import kubectl_kustomize_apply
-from kuroboros.cli.utils import create_file, load_controller_configs
+from kuroboros.cli.utils import create_file, get_image_info, load_controller_configs
 from kuroboros.config import KuroborosConfig
 from kuroboros.operator import Operator
 from kuroboros.logger import root_logger
@@ -217,19 +218,14 @@ def deployment(ctx):
             include_webhook_service = True
     image_config = []
 
-    reg = KuroborosConfig.get("image", "registry", typ=str)
-    repo = KuroborosConfig.get("image", "repository", typ=str)
-    tag = KuroborosConfig.get("image", "tag", typ=str)
-    img = repo
-    if reg != "":
-        img = f"{reg}/{repo}"
+    img = get_image_info()
 
-    if f"{img}:{tag}" != "kuroboros-operator:latest":
+    if img != "kuroboros-operator:latest":
         image_config = [
             {
                 "name": "kuroboros-operator:latest",
-                "new_name": img,
-                "new_tag": tag,
+                "new_name": img.split(":")[0],
+                "new_tag": img.split(":")[1],
             }
         ]
 
@@ -369,9 +365,10 @@ def operator(name):
     click.echo(f"🌀🐍 Creating {name} Operator")
     conf = new_config(name)
     dockerfile = new_dockerfile()
+    pyproject = new_pyproject(name, VERSION_NUM)
 
     create_file(".", "operator.toml", conf)
-    create_file(".", "requirements.txt", f"kuroboros=={VERSION_NUM}\n")
+    create_file(".", "pyproject.toml", pyproject)
     create_file(".", "Dockerfile", dockerfile)
     create_file("controllers", "__init__.py", "")
 
@@ -387,44 +384,11 @@ def deploy(overlay):  # pylint: disable=redefined-outer-name
 
 
 @cli.command(help="Build the image")
-@click.option(
-    "--build-arg",
-    multiple=True,
-    help="Build arguments to pass to Docker (format: key=val). Can be specified multiple times.",
-)
-@click.option(
-    "--quiet",
-    "-q",
-    is_flag=True,
-    default=False,
-    help="Supress stdout",
-)
-def build(build_arg, quiet):
+def build():
     """
     Build the image
     """
-    reg = KuroborosConfig.get("image", "registry", typ=str)
-    repo = KuroborosConfig.get("image", "repository", typ=str)
-    tag = KuroborosConfig.get("image", "tag", typ=str)
-    img = f"{repo}:{tag}"
-    if reg != "":
-        img = f"{reg}/{img}"
-    # Parse build-args into a dict
-    build_args = {}
-    for arg in build_arg:
-        if "=" in arg:
-            k, v = arg.split("=", 1)
-            build_args[k] = v
-        else:
-            raise click.BadParameter(
-                f"Invalid build-arg format: '{arg}', expected key=val"
-            )
-    if not quiet:
-        click.echo("🌀 Building operator image")
-    docker_build(img, args=build_args, quiet=quiet)
-    if not quiet:
-        click.echo("🌀 Done building operator image")
-    click.echo(img)
+    build_operator_image()
 
 
 @cli.command(help="Starts the Kuroboros Operator")

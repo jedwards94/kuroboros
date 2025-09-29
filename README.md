@@ -1,7 +1,20 @@
-# KUROBOROS
-Kubernetes Operator Framework
+# Kuroboros Framework
 
-## Index
+Kuroboros is an object-oriented Python framework designed for developing Kubernetes Operators using the [Controller Pattern](https://kubernetes.io/docs/concepts/architecture/controller/#controller-pattern). 
+
+The name derives from "**K**ubernetes" and "O**uroboros**", the symbolic serpent in a perpetual cycle.
+
+## Features
+
+- Typed object definitions for CRDs
+- Automated generation and deployment of Kubernetes manifests via Kustomize
+- Built-in support for validation and mutation webhooks
+- Metrics exposure for Prometheus
+- Leader election for high availability
+- Automatic RBAC manifest generation
+
+
+## Table of Contents
 
 - [Quickstart](#quickstart)
 - [Operator](#operator)
@@ -11,8 +24,8 @@ Kubernetes Operator Framework
 - [Group Version Info (`group_version.py`)](#group-version-info-group_versionpy)
 - [Custom Resource Definition (`crd.py`)](#custom-resource-definition-crdpy)
   - [CRD Properties](#crd-properties)
-  - [Built-in Methods and Properties](#built-in-methods-and-properties)
 - [Reconciler (`reconciler.py`)](#reconciler-reconcilerpy)
+    - [Performing operations over resources in Kubernetes](#performing-operations-over-resources-in-kubernetes)
 - [Admission Webhooks](#admission-webhooks)
   - [Validation Webhook (`validation.py`)](#validation-webhook-validationpy)
   - [Mutation Webhook (`mutation.py`)](#mutation-webhook-mutationpy)
@@ -25,7 +38,7 @@ Kubernetes Operator Framework
     - [`build`](#build)
     - [`deploy OVERLAY`](#deploy-overlay)
 - [Metrics](#metrics)
-- [Config](#config)
+- [Configuration](#configuration)
 
 ---
 
@@ -33,27 +46,29 @@ Kubernetes Operator Framework
 
 ### 1. Create a New Operator Project
 
-Start by creating a new directory for your operator and initializing the project:
+Create a new directory for your operator and initialize the project:
 
 ```sh
 mkdir cache-operator
 cd cache-operator
+pip install kuroboros
 kuroboros new operator cache-operator
-kuroboros new controller --kind Cache --api-version v1alpha1 --group kuroboros.io
+kuroboros new controller --kind Cache --api-version v1beta1 --group kuroboros.io
 ```
 
 This will generate the following structure:
 
-```sh
+```
 cache-operator
 ├── controllers
 │   ├── cache
 │   │   ├── group_version.py
-│   │   └── v1alpha1
+│   │   └── v1beta1
 │   │       ├── crd.py
 │   │       └── reconciler.py
 │   └── __init__.py
 ├── Dockerfile
+├── requirements.txt
 └── operator.toml
 ```
 
@@ -61,7 +76,7 @@ cache-operator
 
 ### 2. Define CRD Spec and Status
 
-Edit `./controllers/cache/v1alpha1/crd.py` to define your CRD's specification and status.  
+Edit `./controllers/cache/v1beta1/crd.py` to define your CRD's specification and status.  
 After making changes, regenerate your CRD manifest:
 
 ```sh
@@ -71,21 +86,21 @@ kuroboros generate crd
 **Example:**
 
 ```python
-from kuroboros.schema import BaseCRD, BaseCRDProp, prop
+from kuroboros.schema import CRDSchema, OpenAPISchema, prop
 
-class CacheResourceObjects(BaseCRDProp):
+class CacheResourceObjects(OpenAPISchema):
     cpu = prop(str)
     memory = prop(str)
 
-class CacheResources(BaseCRDProp):
+class CacheResources(OpenAPISchema):
     requests = prop(CacheResourceObjects)
     limits = prop(CacheResourceObjects)
 
-class CacheStatus(BaseCRDProp):
+class CacheStatus(OpenAPISchema):
     current_size = prop(int)
     phase = prop(str, enum=["Healthy", "Progressing"])
 
-class Cache(BaseCRD):
+class Cache(CRDSchema):
     image_tag = prop(str, required=True, default="redis", enum=["redis"])
     desired_size = prop(int, required=True, default=3, minimum=1, maximum=20)
     resources = prop(CacheResources)
@@ -96,18 +111,23 @@ class Cache(BaseCRD):
 
 ### 3. Implement Reconciliation Logic
 
-Define your reconciliation logic in `./controllers/cache/v1alpha1/reconciler.py`:
+Define your reconciliation logic in `./controllers/cache/v1beta1/reconciler.py`:
 
 ```python
 from kuroboros.reconciler import BaseReconciler
-from controllers.cache.v1alpha1.crd import Cache
+from controllers.cache.v1beta1.crd import Cache
 from datetime import timedelta
 import threading
 
 class CacheReconciler(BaseReconciler[Cache]):
-    def reconcile(self, logger, obj: Cache, stopped: threading.Event):
+    def reconcile(self, obj: Cache, stopped: threading.Event):
         # Implement your reconciliation logic here
-        obj.patch()  # Patch the CRD if changes were made
+        self.patch(
+            name=obj.name,
+            namespace=obj.namespace,
+            patch_body=obj.to_dict(),
+            subresources=["status"]
+        )
         return timedelta(seconds=10)
 ```
 
@@ -126,6 +146,10 @@ Push the image to your registry:
 ```sh
 docker push <your-operator-image>:<your-tag>
 ```
+or load it into minukbe
+```sh
+minikube load <your-operator-image>:<your-tag>
+```
 
 ---
 
@@ -138,21 +162,25 @@ kuroboros generate manifests
 kuroboros generate overlay local
 kuroboros deploy local
 ```
-**Your operator is now ready to manage custom resources in your Kubernetes cluster. For advanced configuration and usage, refer to the documentation below.**
+
+Your operator is now ready to manage custom resources in your Kubernetes cluster. For advanced configuration and usage, refer to the documentation below.
+
+See the full example repository [here](https://github.com/jedwards94/kuroboros-example).
 
 ---
 
 ## Operator
 
-The `Operator` adds `Controllers` to watch over them and keeps track of the number of `Threads` that are running. It also runs and watches the webhook server in a Falcon app behind Gunicorn in a separate process.
+The `Operator` manages multiple `Controllers`, tracks the number of running threads, and supervises the webhook server (running in a Falcon app behind Gunicorn in a separate process).
 
 ---
 
 ## Controller
 
-A `Controller` is composed of a `GroupVersionInfo` and a `Reconciler` and maybe `ValidationWebhook` and/or `MutationWebhook`. The `GroupVersionInfo` informs the `Controller` about which CRs it should keep track of, adding them as members when an event of `ADDED` or `MODIFIED` is received or removing them when the event is `DELETED`.
+A `Controller` consists of a `GroupVersionInfo`, a `Reconciler`, and optionally, `ValidationWebhook` and/or `MutationWebhook`.  
+The `GroupVersionInfo` specifies which CRs the controller manages. The controller adds members when it receives `ADDED` or `MODIFIED` events and removes them on `DELETED` events.
 
-Whenever a member is added, the controller creates a `Reconciler` for the CR and starts the reconciliation loop `Thread` that it keeps track of. If a `MODIFIED` event is received while the reconciliation loop is running, the event will be skipped. When the CR is finally removed from the cluster and a `DELETED` event is received, the `Controller` sends a stop event to the `Reconciler` and it returns as soon as possible, ignoring the interval (or backoff) returned (or raised) by the `reconcile` function.
+When a member is added, the controller creates a `Reconciler` for the CR and starts its reconciliation loop in a separate thread. If a `MODIFIED` event is received while the loop is running, the event is skipped. When a `DELETED` event is received, the controller signals the reconciler to stop as soon as possible.
 
 ---
 
@@ -233,15 +261,16 @@ end
 
 ## Group Version Info (`group_version.py`)
 
-The `group_version.py` file located in the `/controllers` path includes the general information about your CRD: its `kind`, `api_version`, and `group`. This file defines the behavior of the controller and the CLI over the CRD. The controller will watch for these values and the CLI will set these values in the manifests.
+The `group_version.py` file in the `/controllers` directory defines the CRD's `kind`, `api_version`, and `group`.  
+This information is used by both the controller and the CLI to manage and generate manifests for the CRD.
 
-### Example
+**Example:**
 ```python
 from kuroboros.group_version_info import GroupVersionInfo
 
 gvi = GroupVersionInfo(
-    api_version="v1",
-    group="acme.com",
+    api_version="v1beta1",
+    group="kuroboros.io",
     kind="Cache",
 )
 ```
@@ -250,216 +279,157 @@ gvi = GroupVersionInfo(
 
 ## Custom Resource Definition (`crd.py`)
 
-The `CRD` is the model of your CRD. This definition will be used to load the etcd data into a Python class and will define the Kubernetes manifest for your CRD. Every `CRD` **must** be a class inherited from `BaseCRD`, otherwise the CLI won't recognize it as a model to generate the manifest.
+The CRD model defines the schema for your custom resource and is used to generate the Kubernetes manifest.  
+Every CRD **must** inherit from `CRDSchema` for the CLI to recognize it.
 
 ### CRD Properties
 
-To define a property in the CRD you must use the `prop(type, **kwargs)` function.
+Define properties in your CRD using the `prop(type, **kwargs)` function.
 
-Supported types:
-- `str`
-- `int`
-- `float`
-- `dict`
-- `bool`
-- `list[str]`
-- `list[int]`
-- `list[float]`
-- `list[bool]`
-- Subclasses of `BaseCRDProp`
+**Supported types:**
+- `str`, `int`, `float`, `dict`, `bool`, `byte`
+- `list[str]`, `list[int]`, `list[float]`, `list[bool]`, `list[byte]`
+- Subclasses of `OpenAPISchema` and `list` of them
+- `kubernetes.client` classes
 
-Every `prop()` field in the class is a field in the `spec` of the CRD, except for `status`, which by default is `prop(dict, x_kubernetes_preserve_unknown_fields=True)`.
-
-You can create reusable definitions with `BaseCRDProp`.
+You can create reusable property definitions with `OpenAPISchema`.
 
 #### Keyword Arguments
 
-The `prop` function uses two keyword arguments, `properties` and `required`. These arguments define the inner types of a `dict` property and whether it's required. Every other keyword argument passed to the function will be put in the definition of the property itself; only the `x_kubernetes_.*` fields will be transformed to kebab-case.
-See the [Official Kubernetes Documentation](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation) for more info.
+The `prop` function accepts `properties` and `required` as keyword arguments, as well as any additional OpenAPI or Kubernetes-specific fields.  
+See the [Kubernetes CRD validation docs](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation) for details.
 
-#### Classes as properties
-The `BaseCRDProp` provides an inheritable class that can be used in the `prop()` function as its type. This is useful so you can access the data as `my_crd.prop.subprop` instead of `my_crd.prop["subprop"]`. If a class propertie is `None` you can set the value with `MyCRDProp(**kwargs)` this will create a new value with populated data from `kwargs` (in snake or camel case)
+#### Classes as Properties
+
+You can define classes as properties using `kubernetes.client` and `OpenAPISchema` classes. Take in consideration that using `kubernetes.client` classes doesn't allow to cutomizes requirements in the propertie, such as setting its minimum, default or max value.
 
 #### Example
-```python
-# example/controllers/cache/v1alpha1/crd.py
-from kuroboros.schema import BaseCRD, BaseCRDProp, prop
 
-class CacheResourceObjects(BaseCRDProp):
+```python
+from kubernetes.client import V1ObjectMeta
+from kuroboros.schema import CRDSchema, OpenAPISchema, prop
+
+class CacheResourceObjects(OpenAPISchema):
     cpu = prop(str)
     memory = prop(str)
 
-class CacheResources(BaseCRDProp):
+class CacheResources(OpenAPISchema):
     requests = prop(CacheResourceObjects)
     limits = prop(CacheResourceObjects)
 
-class Cache(BaseCRD):
-    image_tag = prop(str, required=True, default="valkey", enum=["valkey", "redis"])
+class CacheSpec(OpenAPISchema):
+    image_tag = prop(str, required=True, default="valkey/valkey", enum=["valkey/valkey", "redis"])
     desired_size = prop(int, required=True, default=3, minimum=1, maximum=20)
     resources = prop(CacheResources)
+
+class Cache(CRDSchema):
+    metadata = prop(V1ObjectMeta)
+    kind = prop(str)
+    api_version = prop(str)
+
+    spec = prop(CacheSpec)
     status = prop(dict, properties={
         "current_size": prop(int, default=0),
         "phase": prop(str, enum=["Healthy", "Progressing"])
     })
 ```
 
-### Built-in Methods and Properties
+#### Documentation and Additional Printer Columns
 
-The following methods and properties are available on all CRD classes inheriting from `BaseCRD`:
+- Docstrings are used for OpenAPI schema descriptions in the CRD manifest.
+- Use the `description` argument in `prop()` for field descriptions.
+- To add an `additionalPrinterColumn`, add a tuple to the `print_columns` dictionary in your `CRDSchema`:
 
-#### `patch(patch_status: bool = True) -> None`
-Updates the Custom Resource (CR) instance in the cluster with the current spec. If `patch_status` is `True`, the status is also patched.
-
----
-
-#### `add_finalizer(finalizer: str) -> None`
-Adds a finalizer to the CR instance (`metadata["finalizers"]`) and patches the resource in the cluster.
-
----
-
-#### `remove_finalizer(finalizer: str) -> None`
-Removes a finalizer from the CR instance (`metadata["finalizers"]`) and patches the resource in the cluster.
-
----
-
-#### `get_owner_ref(block_self_deletion: bool = True) -> V1OwnerReference`
-Retrieves the current Kubernetes `V1OwnerReference` for the CR instance.
-
----
-
-#### `get_data() -> Dict[str, Any]`
-Returns a dictionary containing the `spec`, `status`, and `metadata` of the CR instance.
-
----
-
-#### `create_namespaced(api: CustomObjectsApi, namespace: str, name: str, spec: Dict, metadata: Dict | None = None)` (`@classmethod`)
-Creates a namespaced CR with the specified `name` and `spec` in the given `namespace`. Fails if CR is not Namespaced
-
----
-#### `create_cluster_scoped(api: CustomObjectsApi, name: str, spec: Dict, metadata: Dict | None = None)` (`@classmethod`)
-Creates a namespaced CR with the specified `name` and `spec` in the cluster. Fails if the CR is not Cluster-scoped
-
----
-
-#### `get_namespaced(api: CustomObjectsApi, namespace: str, name: str)` (`@classmethod`)
-Retrieves a namespaced CR with the specified `name` from the given `namespace`. Fails if CR is not Namespaced
-
----
-
-#### `get_cluster_scoped(api: CustomObjectsApi, name: str)` (`@classmethod`)
-Retrieves a namespaced CR with the specified `name` from the cluster. Fails if the CR is not Cluster-scoped
-
----
-
-#### `list_namespaced(api: CustomObjectsApi, namespace: str, **kwargs)` (`@classmethod`)
-Lists all CRs in the specified `namespace` matching the provided criteria. Additional parameters are passed to `CustomObjectsApi.list_namespaced_custom_object`. Fails if CR is not Namespaced
-
----
-
-#### `list_cluster_scoped(api: CustomObjectsApi, **kwargs)` (`@classmethod`)
-Lists all CRs in the cluster matching the provided criteria. Additional parameters are passed to `CustomObjectsApi.list_cluster_custom_object`. Fails if CR is not Cluster-scoped
-
----
-
-#### `marked_for_deletion: bool` (`@property`)
-Returns `True` if the CR instance has a `deletionTimestamp` in its metadata, otherwise `False`.
-
----
-
-#### `finalizers: List[str]` (`@property`)
-Returns the list of finalizers from the CR instance's metadata, or an empty list if none are defined.
-
----
-
-#### `uid: str` (`@property`)
-Returns the unique identifier (`uid`) of the CR instance.
-
----
-
-#### `namespace_name: utils.NamespaceName` (`@property`)
-Returns a tuple containing the namespace and name of the CR instance.
-
----
-
-#### `resource_version: str` (`@property`)
-Returns the `resourceVersion` of the CR instance.
-
-### Documentation and Additional Printer Columns
-
-Using the Python docstring will set the `propertie` or `openAPIV3Schema` description in yout CRD manifest. Additionally, you can set the `description` argument in `prop()` to define a field `description`.
-
-To add a field to `additionalPrinterColumn` add a `Tuple[str, str]` to the `print_columns` `Dict[str, Tuple[str, str]]` in your `BaseCRD`. The `Dict` key is the name, the first `str` in the `Tuple` is the `jsonPath` and the last `str` in the `Tuple` is the type.
-#### example
 ```python
-class MyColumn(BaseCRDProp):
-    """
-    A custom class field
-    """
+class MyColumn(OpenAPISchema):
+    """A custom class field"""
     str_field = prop(str)
 
-class MyCRD(BaseCRD):
-    """
-    MyCRD Defines a Custom Resource
-    """
-    int_column = prop(int, description="A Integer column")
+class MyCRDSpec(OpenAPISchema):
+    """A custom class field"""
+    int_field = prop(int)
     custom_column = prop(MyColumn)
+
+class MyCRD(CRDSchema):
+    """MyCRD Defines a Custom Resource"""
+    spec = prop(MyCRDSpec)
     print_columns = {
         "intCol": (".spec.intColumn", "integer")
     }
 ```
 
-
+---
 
 ## Reconciler (`reconciler.py`)
 
-The `Reconciler` is where you implement the method `reconcile`. The `Controller` will create a `Reconciler` for every member to run its loop in a separate `Thread`, so creating in-memory dictionaries and variables in the `BaseReconciler` class as class variables should be done with concurrency in mind. Every `Reconciler` **must** be a class inherited from `BaseReconciler` and be located in `reconciler.py`, otherwise the CLI won't recognize the class.
+The `Reconciler` implements the `reconcile` method.  
+Each CR instance gets its own reconciler running in a separate thread.  
+Class-level variables in `BaseReconciler` should be used with care due to concurrency.
 
-### Key considerations
-- Returning a `datetime.timedelta` schedules a requeue after the specified duration.
-- Returning `None` (or omitting a return value) terminates reconciliation until subsequent resource updates.
+The `reconcile` method returns a `Result` that tells the reconciller if it should keep reconciling or stop. It takes `requeue: bool` and `requeue_after_seconds: float` as parameters of its constructor with `True` and `0` as its defaults. You can ralso aise a `RetriableException(backoff: float)` to retry the reconcile function in the specified `backoff`
 
-#### Example
+
+### Performing operations over resources in Kubernetes
+The reconciler has a `kubernetes.dynamic.DynamicClient` built-in and accesible through the:
+- `get(name: str, namespace: str | None = None, ...)`: Gets resource(s) given its `**kwargs` passed to `DynamicClient` (example: `label_selctor="app=redis"` or `name="resource-name"`)
+- `patch(name: str, namespace: str | None = None, subresources: list[str], content_type: str, patch_body: dict,...)`: Patches a object given its name and posibly namespace using the `"application/merge-patch+json"` patch. Accepts a `subresources: list[str]` to patch the object subresources.
+- `create(namespace: str | None = None, body: dict,...)`: Creates a object in the given namespace with the given OpenAPI `Dict``
+- `delete(...)`: Deletes a object given its name and posibly namespace
+
+Each method accepts `api_version`, `kind` and `typ` parameters, if `kind` was given but not `api_version`, the operation will be performed over the prefered version in the cluster. If given a `typ` parameter of a kubernetes resource (for example: `kubernetes.client.V1Deployment`) or a subclass of `CRDSchema`, the result will be serialized to this type, if not give, the result will be a `object`.
+
+**Note**: Using subclasses of `CRDSchema` as `typ` doesn't need the `kind` and `api_version` parameters, as they are infered from their `GroupVersionInfo`.
+
+**Key points:**
+- Return a `Result(requeue_after_seconds=float)` to schedule a requeue in a specific interval.
+- Return a `Result()` to schedule a requeue inmediately.
+- Return a `Result(requeue=False)` to stop the reconciliation until further updates.
+- A `Result(requeue=False, requeue_after_seconds: 10)` will stop the reconciliation until further updates as `requeue` has priority.
+
+**Example:**
 
 ```python
-# example/controllers/cache/v1alpha1/reconciler.py
-from kuroboros.reconciler import BaseReconciler
-from controllers.cache.v1alpha1.crd import Cache
-from datetime import timedelta
 import threading
+from kuroboros.reconciler import BaseReconciler, Result
+from controllers.cache.v1beta1.crd import Cache
 
 class CacheReconciler(BaseReconciler[Cache]):
     def reconcile(self, logger, obj: Cache, stopped: threading.Event):
         if some_condition:
-            return timedelta(seconds=5) # The `reconcile` function will run again in 5 seconds
-        return # the reconciliation loop stops
+            return Result(requeue_after_seconds=5)
+        return Result(requeue=False)
 ```
 
-### Testing the Reconciler
-To test the reconciler you need to set the `GroupVersionInfo` of the classes that your `reconcile` function uses, and patch any kubernetes related function, here is an example using `unittest`
-#### Example
+**Testing:**
+
+Use `unittest` and patch Kubernetes-related functions of the Reconciler. Remember to set the `GroupVersionInfo` in your `CRDSchema` and `BaseReconciler` subclasses and load you config file:
+
 ```python
 import logging
 import threading
 import unittest
 from unittest.mock import patch
+from kuroboros.config import KuroborosConfig
 
-from controllers.cache.v1alpha1.crd import Cache, CacheStatus
-from controllers.cache.v1alpha1.reconciler import CacheReconciler
+from controllers.cache.v1beta1.crd import Cache, CacheStatus
+from controllers.cache.v1beta1.reconciler import CacheReconciler
 from controllers.cache.group_version import gvi
 
 
 test_data = {
+    "kind": "Cache",
+    "api_version": "kuroboros.io/v1beta1",
     "metadata": {
         "name": "test",
         "namespace": "default",
         "uid": "1",
-        "resourceVersion": "1",
+        "resource_version": "1",
     },
     "spec": {
         "engine": "redis",
         "engineVersion": "latest",
-        "volumeSize": "1Gi",
-        "desiredSize": "1",
+        "volume_size": "1Gi",
+        "desired_size": "1",
         "resources": {
             "requests": {"cpu": "1", "memory": "1Gi"},
             "limits": {"cpu": "1", "memory": "1Gi"},
@@ -473,88 +443,86 @@ class TestReconciler(unittest.TestCase):
     def setUp(self) -> None:
         CacheReconciler.set_gvi(gvi)
         Cache.set_gvi(gvi)
+        KuroborosConfig.load("operator.toml")
         return super().setUp()
 
     def test_reconciler_run(self):
-        def mock_patch():
-            return
-
         reconciler = CacheReconciler(("default", "test"))
-        cache = Cache(
-            api=reconciler.api,
-            data=test_data,
-        )
+        cache = Cache(**test_data)
         event = threading.Event()
-        with patch.object(cache, "patch", side_effect=mock_patch) as patch_:
-            reconciler.reconcile(logging.getLogger("test"), cache, event)
+        with patch.object(reconciler, "patch", return_value=None) as patch_:
+            reconciler.reconcile(cache, event)
             self.assertIsNotNone(cache.status)
             self.assertIsInstance(cache.status, CacheStatus)
             patch_.assert_called_once()
-
 ```
 
 ---
 
 ## Admission Webhooks
 
-Currently, only validation and mutation webhooks are supported. Both of these webhooks are optional.
+Kuroboros supports validation and mutation webhooks.
+
+Each webhook recieaves a `request: Request[CRDSchema]` parameter, wich consist on the `AdmissionReview` request property. 
+You can read more about the aviability of some field in the [Kubernetes Documentaion](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#request) 
 
 ### Validation Webhook (`validation.py`)
 
-Create a class with `BaseValidationWebhook` as its base and implement the methods:
-- `validate_create(data)`: method run on a `CREATE` event
-- `validate_update(data, old_data)`: method run on `UPDATE` events
-- `validate_delete(old_data)`: method run on `DELETE` events
+Inherit from `BaseValidationWebhook` and implement:
 
-Both the `data` and `old_data` objects are in `read_only` mode, which means that no attribute can be changed and trying to do so will raise an exception.
+- `validate(request: Request[MyCRD])`
 
-The CLI will detect this class and use it to create the manifests and the operator will expose the endpoint `POST /<VERSION>/<SINGULAR>/validate`.
+**Example:**
 
-#### Example
 ```python
-# example/controllers/cache/v1alpha1/validation.py
-from kuroboros.webhook import BaseValidationWebhook
+from kuroboros.webhook import BaseValidationWebhook, Request
 from kuroboros.exceptions import ValidationWebhookError
+from controllers.cache.v1beta1.crd import Cache
 
-from controllers.cache.v1alpha1.crd import Cache
 
 class CacheValidation(BaseValidationWebhook[Cache]):
+    register_on = ["CREATE", "UPDATE"]
 
-    register_on = ["CREATE", "UPDATE", "DELETE"]
+    allowed_images = {
+        "redis": ["7.1", "latest"],
+        "memcached": ["latest"],
+        "valkey": ["latest"],
+    }
 
-    def validate_create(self, data: Cache):
-        if "some-annotation" not in data.metadata:
-            raise ValidationWebhookError("cache must have some-annotation")
-        
-        return
+    def validate(self, request: Request[Cache]):
+        assert request.object is not None
+        engine = request.object.spec.engine
+        engine_version = request.object.spec.engine_version
+        if engine_version not in self.allowed_images[engine]:
+            raise ValidationWebhookError(
+                f"{engine_version} is not a valid version for {engine}"
+            )
 
-    def validate_update(self, data: Cache, old_data: Cache):
-        # Some update logic
-        return        
 ```
 
 ### Mutation Webhook (`mutation.py`)
 
-Using the `BaseMutationWebhook` class, implement the `mutate(data: MyCRD) -> MyCRD` method where you make changes to the existing object in the cluster and return it. Once returned, it will be compared against the original and JSONPatch operations will be performed on it.
+Inherit from `BaseMutationWebhook` and implement:
 
-Defining this class will expose the endpoint `POST /<VERSION>/<SINGULAR>/mutate` on the webhook server.
+- `mutate(request: Request[MyCRD]) -> MyCRD`
 
-#### Example
+**Example:**
 
 ```python
-# example/controllers/cache/v1alpha1/mutation.py
-from kuroboros.webhook import BaseMutationWebhook
-
-from controllers.cache.v1alpha1.crd import Cache
+from kuroboros.webhook import BaseMutationWebhook, Request, OperationsEnum
+from controllers.cache.v1beta1.crd import Cache
 
 class CacheMutation(BaseMutationWebhook[Cache]):
-    def mutate(self, data: Cache):
-        data.metadata["annotations"] = {
-            **data.metadata["annotations"],
-            "some-mandatory-annotation": "something",
-            "some-calculated-one": f"something-{rand(1, 100)}"
-        }
-        return data
+    def mutate(self, request: Request[Cache]) -> Cache:
+        assert request.object is not None
+        if request.object.metadata.annotations is None:
+            request.object.metadata.annotations = {}
+        if request.operation == OperationsEnum.CREATE:
+            request.object.metadata.annotations["owner"] = request.user_info["username"]
+            
+        request.object.metadata.annotations["lastUpdatedBy"] = request.user_info["username"]
+        return request.object
+
 ```
 
 ---
@@ -573,19 +541,18 @@ kuroboros [OPTIONS] COMMAND [ARGS]
 - `-c, --config TEXT`  Configuration file to use (default: `operator.toml`)
 - `-l, --log-level TEXT`  Log level for the app
 
-
-`-l, --log-level` will override the `operator.log_level` in your config file.
+The `-l, --log-level` option overrides the `operator.log_level` in your config file.
 
 ---
 
 ### Commands
 
 #### `start`
-Starts the operator, loading the config file and all controllers with their versions.
+Starts the operator, loading the config file and all controllers.
 
 **Options:**
-  - `--skip-controllers`     Skips all controllers startup
-  - `--skip-webhook-server`  Skips the webhook server startup
+- `--skip-controllers`     Skip all controllers startup
+- `--skip-webhook-server`  Skip the webhook server startup
 
 **Usage:**
 ```sh
@@ -595,145 +562,96 @@ kuroboros start
 ---
 
 #### `generate`
-Generate Kubernetes-related YAMLs.
+Generate Kubernetes manifests.
 
-##### `generate manifests`
-Generates all manifests in `./config/base`.
+- `generate manifests`: Generates all manifests in `./config/base`.
+- `generate rbac`: Generates RBAC manifests in `./config/base/rbac`.  
+  Policies are defined in your config file under `[[generate.rbac.policies]]`:
 
-**Usage:**
-```sh
-kuroboros generate manifests
-```
+  ```toml
+  [[generate.rbac.policies]]
+  api_groups = [""]
+  resources = ["pods"]
+  verbs = ["create", "patch", "update", "list", "watch"]
+  ```
 
----
+- `generate deployment`: Generates deployment manifests in `./config/base/deployment`.  
+  The `[build.image]` section in your config sets the image:
 
-##### `generate rbac`
-Generates RBAC manifests in `./config/base/rbac`.  
-Policies are defined in your config file under `[[generate.rbac.policies]]` sections, e.g.:
+  ```toml
+  [build]
+  [build.image]
+  registry = "my.registry.io"
+  repository = "cache-operator"
+  tag_suffix = "-dev"
+  tag_prefix = "rc"
+  tag = "$PYPROJECT_VERSION"
+  ```
+  Using `tag = "$PYPROJECT_VERSION"` will set the tag to the `pryproject.toml` `project.version` value, using `$TAG_OR_SHORT_COMMIT_SHA` will use the commit tag if available and fallback to the short SHA.
 
-```toml
-[[generate.rbac.policies]]
-api_groups = [""]
-resources = ["pods"]
-verbs = ["create", "patch", "update", "list", "watch"]
-```
-
-**Usage:**
-```sh
-kuroboros generate rbac
-```
-
----
-
-##### `generate deployment`
-Generates deployment-related manifests in `./config/base/deployment`.  
-Includes your config file as a ConfigMap with only the `[operator]` section.  
-You can set a custom image in the config file:
-
-```toml
-[image]
-registry = "my.registry.io"
-repository = "cache-operator"
-tag = "v0.0.1"
-```
-
-**Usage:**
-```sh
-kuroboros generate deployment
-```
-
----
-
-##### `generate webhooks`
-Generates webhook-related manifests in `./config/base/webhooks`.
-
-**Usage:**
-```sh
-kuroboros generate webhooks
-```
-
----
-
-##### `generate crd`
-Generates CRD manifests in `./config/base/crd`.  
-Loads every version found in `./controllers` and sets the version in `group_version.py` as the `stored` version.  
-Only properties defined with the `prop()` function in your `BaseCRD`-inherited class are included.
-
-**Usage:**
-```sh
-kuroboros generate crd
-```
-
----
-
-##### `generate overlay [NAME]`
-Generates a new Kustomization overlay in `./config/overlays/[NAME]`.
-
-**Usage:**
-```sh
-kuroboros generate overlay [NAME]
-```
+- `generate webhooks`: Generates webhook manifests in `./config/base/webhooks`.
+- `generate crd`: Generates CRD manifests in `./config/base/crd`.
+- `generate overlay [NAME]`: Generates a new Kustomize overlay in `./config/overlays/[NAME]`.
 
 ---
 
 #### `new`
 Create new modules.
 
-##### `new controller`
-Creates a new controller in `./controllers`.
+- `new controller`: Creates a new controller in `./controllers`.
 
-**Options:**
-- `--kind TEXT`         The kind of the CRD  **[required]**
-- `--api-version TEXT`  The version to use (e.g., `v1alpha1`)  **[required]**
-- `--group TEXT`        The group owner of the CRD  **[required]**
+  **Options:**
+  - `--kind TEXT`         Kind of the CRD (required)
+  - `--api-version TEXT`  API version (e.g., `v1beta1`) (required)
+  - `--group TEXT`        Group owner of the CRD (required)
 
-**Example:**
-```sh
-kuroboros new controller --kind Cache --api-version v1alpha1 --group acme.com
-```
+  **Example:**
+  ```sh
+  kuroboros new controller --kind Cache --api-version v1beta1 --group acme.com
+  ```
 
----
-##### `new webhook`
-Creates a new webhook in `./controllers/<api-version>`.
+- `new webhook`: Creates a new webhook in `./controllers/<api-version>`.
 
-**Options:**
-- `--kind TEXT`         The kind of the CRD  **[required]**
-  `--api-version TEXT`  The version to use (example: v1alpha1)  **[required]**
-  `--type TEXT`         The type of webhook to create (validation, mutation) **[required]**
+  **Options:**
+  - `--kind TEXT`         Kind of the CRD (required)
+  - `--api-version TEXT`  API version (required)
+  - `--type TEXT`         Webhook type (`validation` or `mutation`) (required)
 
-**Example:**
-```sh
-kuroboros new webhook --kind Cache --api-version v1alpha1 --type validation
-```
+  **Example:**
+  ```sh
+  kuroboros new webhook --kind Cache --api-version v1beta1 --type validation
+  ```
 
----
+- `new operator [NAME]`: Creates the necessary files for a new operator project.
 
-##### `new operator [NAME]`
-Creates the necessary files for a new operator project.
-
-**Usage:**
-```sh
-kuroboros new operator [NAME]
-```
+  **Usage:**
+  ```sh
+  kuroboros new operator [NAME]
+  ```
 
 ---
 
 #### `build`
 Builds the operator image using Docker.  
-Uses the `[image]` config to tag the image.
+Uses the `[image]` section in your config for tagging.
 
-**Options:**
-- `--build-arg TEXT` Build arguments to pass to Docker **(format: key=val)**. Can be specified multiple times.
+If you need more controll over the build process change the `[build.builder]` section in your configuration. Set the `build.builder.binary` and `build.builder.args` to the ones that suit your use case. Keep in mind that the `$IMG` environment variable, wich contains the tag of the image, is available when running the build process.
+```toml
+[build]
+[build.builder]
+binary = "docker"
+args = ["build", ".", "-t", "$IMG"]
+```
 
 **Usage:**
 ```sh
-kuroboros build --build-arg [key=val] --build-arg [key2=arg2]
+kuroboros build
 ```
 
 ---
 
 #### `deploy OVERLAY`
-Applies the given overlay to your current kubeconfig context.
+Applies the specified overlay to your current kubeconfig context.
 
 **Usage:**
 ```sh
@@ -744,7 +662,9 @@ kuroboros deploy OVERLAY
 
 ## Metrics
 
-The operator starts collecting and exposing metrics of the threads that it's running. These metrics are exposed by default at port `8080` and collected every 5 seconds. Both of these configurations can be changed in the config file:
+The operator collects and exposes metrics about running threads.  
+Metrics are exposed at port `8080` and collected every 5 seconds by default.  
+You can configure these settings in your config file:
 
 ```toml
 [operator.metrics]
@@ -754,9 +674,13 @@ port = 8080
 
 ---
 
-## Config
+## Configuration
 
-As the deployment only includes the `[operator]` section of the config, if you wish to add an operator-level config you are encouraged to use this file. Otherwise, you can use environment variables or any other method you prefer.
+The operator uses a TOML configuration file (`operator.toml` by default).  
+Only the `[operator]` section is included in the deployment ConfigMap.  
+You can also use environment variables for configuration.
+
+**Example:**
 
 ```toml
 [operator]
@@ -764,20 +688,19 @@ name = "kuroboros-operator"
 log_level = "INFO"
 leader_acquire_interval_seconds = 10
 pending_remove_interval_seconds = 5
-metrics_update_interval_seconds = 5
-retry_backoff_seconds = 5
-metrics_port = 8080
+cleanup_interval_seconds = 5
 
 [operator.webhook_server]
 port = 443
 cert_path = "/etc/tls/tls.crt"
 key_path = "/etc/tls/tls.key"
+gunicorn_workers = 1
 
 [operator.metrics]
 interval_seconds = 5
 port = 8080
 
-[generate.deployment.image]
+[image]
 registry = ""
 repository = "kuroboros-operator"
 tag = "latest"
@@ -787,3 +710,41 @@ api_groups = [""]
 resources = ["pods"]
 verbs = ["create", "patch", "update", "list", "watch"]
 ```
+
+## Recepies
+
+### Using Minikube to develop
+If you are using your local registry to build the images, remember to make it accesible to minikube and change the `Deployment` in the Kustomize layout with a patch like:
+```yaml
+patches:
+    - target:
+        group: apps
+        version: v1
+        kind: Deployment
+        name: deployment-name
+      patch: |-
+        - op: replace
+          path: /spec/template/spec/containers/0/imagePullPolicy
+          value: Never
+```
+
+### Using `cert-manager` for Webhooks certificates
+
+If you are using `cert-manager` for your certificates, you can use them for the webhook server, to do so you will need to inject the ca-bundle into your webhook configuration.
+**example**
+```yaml
+- target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: cache-operator-mutation-webhook
+  patch: |-
+    - op: add
+      path: /metadata/annotations
+      value:
+        cert-manager.io/inject-ca-from: cache-operator/my-selfsigned-ca
+```
+
+### High Aviability
+
+The reconciliation loop is controlled by leadership election, so only one instance of the operator can run the reconciliation, but every operator runs the webhook server (if needed). So only one operator in the deployment reconciles, but every operator accept webhook requests. If you wish to split the deployments, you can make your reconciler deployment runs with the arg `--skip-webhook-server` and the webhook deployment with `--skip-controllers`

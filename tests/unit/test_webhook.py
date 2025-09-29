@@ -2,31 +2,22 @@
 import unittest
 
 import falcon
-from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook
-from kuroboros.schema import BaseCRD
+from kuroboros.schema import CRDSchema, prop
+from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook, Request
 from kuroboros.exceptions import ValidationWebhookError
 from kuroboros.group_version_info import GroupVersionInfo
 import json
 
 
-class DummyCRD(BaseCRD):
-    pass
+class DummyCRD(CRDSchema):
+    fail = prop(bool)
 
 
 class DummyValidationWebhook(BaseValidationWebhook[DummyCRD]):
 
-    def validate_create(self, data: DummyCRD) -> None:
-        if getattr(data, "fail", False):
+    def validate(self, request: Request[DummyCRD]) -> None:
+        if getattr(request.object, "fail", False):
             raise ValidationWebhookError("Create failed")
-
-    def validate_update(self, data: DummyCRD, old_data: DummyCRD) -> None:
-        if getattr(data, "fail", False):
-            raise ValidationWebhookError("Update failed")
-
-    def validate_delete(self, old_data: DummyCRD) -> None:
-        if getattr(old_data, "fail", False):
-            raise ValidationWebhookError("Update failed")
-        pass
 
 
 def make_group_version():
@@ -45,23 +36,25 @@ class TestValidationWebhook(unittest.TestCase):
         admission_review = {
             "apiVersion": "admission.k8s.io/v1",
             "kind": "AdmissionReview",
-            "request": {"uid": "123", "operation": "CREATE", "object": {"fail": False}},
+            "request": {
+                "kind": {},
+                "resource": {},
+                "requestKind": {},
+                "requestResource": {},
+                "name": "dummy",
+                "namespace": "test",
+                "userInfo": {},
+                "dryRun": False,
+                "uid": "123",
+                "operation": "CREATE",
+                "object": {"fail": False},
+            },
         }
         body = json.dumps(admission_review).encode("utf-8")
         resp, status, _ = self.webhook.process(body)
         self.assertEqual(status, falcon.HTTP_200)
         self.assertIn('"allowed": true', resp)
 
-    def test_validate_create_failure(self):
-        admission_review = {
-            "apiVersion": "admission.k8s.io/v1",
-            "kind": "AdmissionReview",
-            "request": {"uid": "123", "operation": "CREATE", "object": None},
-        }
-        body = json.dumps(admission_review).encode("utf-8")
-        resp, status, _ = self.webhook.process(body)
-        self.assertEqual(status, falcon.HTTP_400)
-        self.assertIn('"allowed": false', resp)
 
     def test_validate_update_success(self):
         admission_review = {
@@ -69,6 +62,14 @@ class TestValidationWebhook(unittest.TestCase):
             "kind": "AdmissionReview",
             "request": {
                 "uid": "123",
+                "kind": {},
+                "resource": {},
+                "requestKind": {},
+                "requestResource": {},
+                "name": "dummy",
+                "namespace": "test",
+                "userInfo": {},
+                "dryRun": False,
                 "operation": "UPDATE",
                 "object": {"fail": False},
                 "oldObject": {"fail": False},
@@ -85,6 +86,14 @@ class TestValidationWebhook(unittest.TestCase):
             "kind": "AdmissionReview",
             "request": {
                 "uid": "123",
+                "kind": {},
+                "resource": {},
+                "requestKind": {},
+                "requestResource": {},
+                "name": "dummy",
+                "namespace": "test",
+                "userInfo": {},
+                "dryRun": False,
                 "operation": "UPDATE",
                 "object": {"fail": True},
                 "oldObject": None,
@@ -92,7 +101,7 @@ class TestValidationWebhook(unittest.TestCase):
         }
         body = json.dumps(admission_review).encode("utf-8")
         resp, status, _ = self.webhook.process(body)
-        self.assertEqual(status, falcon.HTTP_400)
+        self.assertEqual(status, falcon.HTTP_200)
         self.assertIn('"allowed": false', resp)
 
     def test_validate_delete_success(self):
@@ -101,6 +110,14 @@ class TestValidationWebhook(unittest.TestCase):
             "kind": "AdmissionReview",
             "request": {
                 "uid": "123",
+                "kind": {},
+                "resource": {},
+                "requestKind": {},
+                "requestResource": {},
+                "name": "dummy",
+                "namespace": "test",
+                "userInfo": {},
+                "dryRun": False,
                 "operation": "DELETE",
                 "object": None,
                 "oldObject": {"fail": False},
@@ -113,12 +130,13 @@ class TestValidationWebhook(unittest.TestCase):
 
     def test_invalid_json(self):
         body = b"not a json"
-        resp, status, headers = self.webhook.process(body)
-        self.assertEqual(status, falcon.HTTP_500)
-        self.assertIn("Validation webhook error", resp)
+        with self.assertRaises(json.JSONDecodeError):
+            self.webhook.process(body)
 
 
-class DummyMutationCRD(BaseCRD):
+class DummyMutationCRD(CRDSchema):
+    mutate = prop(bool)
+    mutated = prop(bool)
     pass
 
 
@@ -127,14 +145,15 @@ class DummyMutationWebhook(BaseMutationWebhook[DummyMutationCRD]):
     def __init__(self):
         super().__init__()
 
-    def mutate(self, data: DummyMutationCRD) -> DummyMutationCRD:
+    def mutate(self, request: Request[DummyMutationCRD]) -> DummyMutationCRD:
         # Example mutation: add a field if not present
-        d = data.get_data()
-        if "spec" in d and d["spec"].get("mutate", False):
-            d["spec"]["mutated"] = True
+        assert request.object is not None
+        d = request.object.to_dict()
+        if d.get("mutate", False):
+            d["mutated"] = True
         else:
-            d["spec"]["mutated"] = False
-        mutated = DummyMutationCRD(api=None, data=d)
+            d["mutated"] = False
+        mutated = DummyMutationCRD(data=d)
         return mutated
 
 
@@ -150,9 +169,17 @@ class TestMutationWebhook(unittest.TestCase):
             "request": {
                 "uid": "456",
                 "operation": "CREATE",
+                "kind": {},
+                "resource": {},
+                "requestKind": {},
+                "requestResource": {},
+                "name": "dummy",
+                "namespace": "test",
+                "userInfo": {},
+                "dryRun": False,
                 "object": {
                     "metadata": {"name": "dummy", "namespace": "test"},
-                    "spec": {"mutate": True},
+                    "mutate": True,
                 },
             },
         }
@@ -169,9 +196,17 @@ class TestMutationWebhook(unittest.TestCase):
             "request": {
                 "uid": "789",
                 "operation": "UPDATE",
+                "kind": {},
+                "resource": {},
+                "requestKind": {},
+                "requestResource": {},
+                "name": "dummy",
+                "namespace": "test",
+                "userInfo": {},
+                "dryRun": False,
                 "object": {
                     "metadata": {"name": "dummy", "namespace": "test"},
-                    "spec": {"mutate": False},
+                    "mutate": False,
                 },
             },
         }
@@ -187,8 +222,19 @@ class TestMutationWebhook(unittest.TestCase):
             "kind": "AdmissionReview",
             "request": {
                 "uid": "999",
+                "kind": {},
+                "resource": {},
+                "requestKind": {},
+                "requestResource": {},
+                "name": "dummy",
+                "namespace": "test",
+                "userInfo": {},
+                "dryRun": False,
                 "operation": "DELETE",
-                "object": {"spec": {"mutate": True}},
+                "object": {
+                    "metadata": {"name": "dummy", "namespace": "test"},
+                    "mutate": True
+                },
             },
         }
         body = json.dumps(admission_review).encode("utf-8")
@@ -199,6 +245,5 @@ class TestMutationWebhook(unittest.TestCase):
 
     def test_mutate_invalid_json(self):
         body = b"not a json"
-        resp, status, _ = self.webhook.process(body)
-        self.assertEqual(status, falcon.HTTP_500)
-        self.assertIn("Mutation webhook error", resp)
+        with self.assertRaises(json.JSONDecodeError):
+            self.webhook.process(body)

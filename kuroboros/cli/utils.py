@@ -2,16 +2,19 @@ import importlib
 import inspect
 import os
 from pathlib import Path
+import select
 import subprocess
 from typing import List
 import caseconverter
 import click
+import tomlkit
+from kuroboros.config import KuroborosConfig
 
 from kuroboros.controller import ControllerConfig, ControllerConfigVersions
 from kuroboros.exceptions import MultipleDefinitionsException
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
-from kuroboros.schema import BaseCRD
+from kuroboros.schema import CRDSchema
 from kuroboros.webhook import BaseMutationWebhook, BaseValidationWebhook
 
 
@@ -30,8 +33,6 @@ def yaml_format(value):
             float(value)
             return f'"{value}"'  # Quote numeric-looking strings
         except ValueError:
-            if "\n" in value:
-                return f"|-\n    {value}"
             # Quote strings with colons, spaces, etc.
             if any(c in value for c in ":[]{}, "):
                 return f'"{value}"'
@@ -78,43 +79,99 @@ def create_file(
         raise e
 
 
-def run_command_stream_simple(command):
+def run_command(command) -> str:
+    """
+    Runs a command and return the ouput once finished
+    """
+    result = subprocess.run(
+        command,
+        check=True,
+        text=True,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    return result.stdout
+
+
+def get_image_info():
+    """
+    Gets the operator image from the KuroborosConfig
+    """
+    reg = KuroborosConfig.get("build", "image", "registry", typ=str)
+    repo = KuroborosConfig.get("build", "image", "repository", typ=str)
+    tag_suffix = KuroborosConfig.get("build", "image", "tag_suffix", typ=str)
+    tag_prefix = KuroborosConfig.get("build", "image", "tag_prefix", typ=str)
+    tag = KuroborosConfig.get("build", "image", "tag", typ=str)
+    if tag in ("$PYPROJECT_VERSION", "$TAG_OR_SHORT_COMMIT_SHA"):
+        if tag == "$PYPROJECT_VERSION":
+            with open("./pyproject.toml", "r", encoding="utf-8") as pyproject:
+                content = pyproject.read()
+                pyproject_toml = tomlkit.loads(content)
+                tag = pyproject_toml.get("project", {}).get("version", "latest")
+        else:
+            tag = run_command(
+                "git describe --exact-match --tags 2> /dev/null || git rev-parse --short HEAD"
+            )
+
+    img = f"{repo}:{tag_prefix}{tag}{tag_suffix}"
+    if reg != "":
+        img = f"{reg}/{img}"
+
+    return img
+
+
+def run_command_stream_simple(command, env=None):
     """
     Runs a siumple shell command and stream the output
     """
+    if env is None:
+        env = {}
     print(f"running command: {command}")
     with subprocess.Popen(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, **env},
+        bufsize=1,
+        universal_newlines=True,
     ) as process:
 
         stdout = []
         stderr = []
 
+        assert process.stdout is not None
+        assert process.stderr is not None
+        fd_stdout = process.stdout.fileno()
+        fd_stderr = process.stderr.fileno()
+
         while True:
             # Check stdout
-            out_line = process.stdout.readline()  # type: ignore
-            if out_line:
-                print(out_line, end="")
-                stdout.append(out_line)
+            reads, _, _ = select.select([fd_stdout, fd_stderr], [], [], 0.1)
+            if fd_stdout in reads:
+                line = process.stdout.readline()
+                if line:
+                    print(line, end="", flush=True)  # Force flush
+                    stdout.append(line)
 
-            # Check stderr
-            err_line = process.stderr.readline()  # type: ignore
-            if err_line:
-                print(err_line, end="")
-                stderr.append(err_line)
+            if fd_stderr in reads:
+                line = process.stderr.readline()
+                if line:
+                    print(line, end="", flush=True)  # Force flush
+                    stderr.append(line)
 
-            # Check process termination
+            # Check if process has finished
             if process.poll() is not None:
+                # Read any remaining output
+                for line in process.stdout:
+                    print(line, end="", flush=True)
+                    stdout.append(line)
+                for line in process.stderr:
+                    print(line, end="", flush=True)
+                    stderr.append(line)
                 break
-
-        # Get remaining output
-        for line in process.stdout:  # type: ignore
-            stdout.append(line)
-            print(line, end="")
-
-        for line in process.stderr:  # type: ignore
-            stderr.append(line)
-            print(line, end="")
 
 
 def load_controller_configs(controllers_path) -> List[ControllerConfig]:
@@ -138,7 +195,7 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
             group_version_module = importlib.import_module(
                 f"{controllers_path}.{controller}.group_version"
             )
-        except Exception:  # pylint: disable=broad-except
+        except ModuleNotFoundError:
             # If we dont find any GVI we skip this controller, as its not a controller (?)
             continue
         group_version = None
@@ -162,23 +219,27 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
             # posibly validation and mutation webhook
             ctrl_versions = ControllerConfigVersions()
             ctrl_versions.name = version
-            version_dir = Path(os.path.join(versions_path, version))
-            patterns = ["crd.py", "reconciler.py", "validation.py", "mutation.py"]
-            python_files = []
-            for pattern in patterns:
-                python_files.extend(version_dir.glob(pattern))
+            modules = [
+                {"name": "crd", "required": True},
+                {"name": "reconciler", "required": True},
+                {"name": "mutation", "required": False},
+                {"name": "validation", "required": False},
+            ]
 
-            for file in python_files:
-                module_name = file.stem
-                if module_name == "__init__":
+            for module_conf in modules:
+                module_name = module_conf["name"]
+                module = None
+                try:
+                    module = importlib.import_module(
+                        f"{controllers_path}.{controller}.{version}.{module_name}"
+                    )
+                except ModuleNotFoundError as e:
+                    if module_conf["required"]:
+                        raise e
                     continue
 
-                module = importlib.import_module(
-                    f"{controllers_path}.{controller}.{version}.{module_name}"
-                )
+                assert module is not None
                 for _, obj in inspect.getmembers(module, inspect.isclass):
-                    if obj.__module__ != module.__name__:
-                        continue
                     if (
                         module_name == "reconciler"
                     ):  # Load reconciler from reconciler.py
@@ -190,7 +251,7 @@ def load_controller_configs(controllers_path) -> List[ControllerConfig]:
                             obj.set_gvi(group_version)
                             ctrl_versions.reconciler = obj
                     elif module_name == "crd":  # Load CRD from crd.py
-                        if BaseCRD in obj.__bases__:
+                        if CRDSchema in obj.__bases__:
                             if ctrl_versions.crd is not None:
                                 raise MultipleDefinitionsException(
                                     ctrl_versions.crd, controller, version

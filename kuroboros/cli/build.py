@@ -1,41 +1,13 @@
-import docker
-from docker.errors import BuildError, APIError
+from kuroboros.config import KuroborosConfig
+from kuroboros.cli.utils import get_image_info, run_command_stream_simple
 
 
-def docker_build(image: str, args: dict[str, str] | None = None, quiet: bool = False) -> None:
+def build_operator_image() -> None:
     """
     Builds a Docker image with given build-args and image tag
     """
-    # Use the low-level APIClient for real-time logging
-    if args is None:
-        args = {}
-
-    low_level_client = docker.APIClient(base_url="unix://var/run/docker.sock")
-
-    try:
-        build_generator = low_level_client.build(
-            path=".", tag=image, buildargs=args, rm=True, decode=True, quiet=quiet
-        )
-
-        for chunk in build_generator:
-            if chunk:
-                if "stream" in chunk:
-                    line = chunk["stream"].strip()
-                    if line:
-                        print(line)
-                elif "error" in chunk:
-                    raise BuildError(chunk["error"], build_log=chunk)
-                elif "status" in chunk:
-                    print(f"Progress: {chunk['status']}")
-                elif "aux" in chunk:
-                    print(f"Final Image ID: {chunk['aux']['ID']}")
-
-    except BuildError as e:
-        print(f"\nBuild failed: {e.msg}")
-        if e.build_log:
-            for entry in e.build_log:
-                print(entry.get("stream", "").strip())
-    except APIError as e:
-        print(f"\nDocker API error: {e.explanation}")
-    finally:
-        low_level_client.close()  # Clean up the client
+    binary = KuroborosConfig.get("build", "builder", "binary", typ=str)
+    args = KuroborosConfig.get("build", "builder", "args", typ=list)
+    img = get_image_info()
+    command = " ".join([binary, " ".join(args)])
+    run_command_stream_simple(command, env={"IMG": img})

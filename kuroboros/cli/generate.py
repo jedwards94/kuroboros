@@ -3,7 +3,7 @@ from typing import Dict, List, cast
 from kuroboros.config import KuroborosConfig
 from kuroboros.controller import ControllerConfig
 from kuroboros.group_version_info import GroupVersionInfo
-from kuroboros.schema import BaseCRD, CRDProp
+from kuroboros.schema import CRDSchema, PropYaml
 from kuroboros.cli.utils import x_kubernetes_kebab, yaml_format
 import kuroboros.cli.templates as temps
 
@@ -12,10 +12,10 @@ temps.env.filters["yaml"] = yaml_format
 
 
 def crd_schema(
-    versions: Dict[str, BaseCRD], group_version_info: GroupVersionInfo
+    versions: Dict[str, CRDSchema], group_version_info: GroupVersionInfo
 ) -> str:
     """
-    Generates the `CustomResourceDefinition` for the inherited `BaseCRD` class
+    Generates the `CustomResourceDefinition` for the inherited `CRDSchema` class
     """
     version_print_columns = {}
     version_props = {}
@@ -24,20 +24,18 @@ def crd_schema(
         crd = versions[version]
         props = {}
 
-        base_attr = dir(BaseCRD)
-        base_attr.append("status")
+        base_attr = dir(CRDSchema)
         child_attr = [attr for attr in dir(crd) if attr not in base_attr]
 
         for attr_name in child_attr:
             if attr_name in base_attr:
                 continue
             attr = object.__getattribute__(crd, attr_name)
-            if isinstance(attr, CRDProp):
-                cased_attr_name = crd.attr_name(attr_name)
+            if isinstance(attr, PropYaml):
+                cased_attr_name = crd.attribute_map[attr_name]
                 props[cased_attr_name] = attr
 
-        status = cast(CRDProp, crd.status)
-        if status.typ != "object":
+        if cast(PropYaml, crd.status).typ != "object":
             raise TypeError("status can only be a `dict` type object")
 
         print_columns: List[Dict] = []
@@ -47,7 +45,7 @@ def crd_schema(
             version_print_columns[version] = print_columns
         if crd.__doc__ is not None:
             version_desc[version] = crd.__doc__.strip()
-        version_props[version] = {"props": props, "status": status}
+        version_props[version] = {"props": props}
 
     crd_template = temps.env.get_template("generate/crd/crd.yaml.j2")
     return crd_template.render(
