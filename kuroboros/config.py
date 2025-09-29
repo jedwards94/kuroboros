@@ -67,13 +67,13 @@ class KuroborosConfig:
                 raise KeyError(f"config for {'.'.join(keys)} not found")
         if typ is not None:
             if typ == float and isinstance(current, int):
-                return cast(T, current)
+                return int(current) # type: ignore
             if not isinstance(current, typ):
                 raise AssertionError(
                     f"type of {'.'.join(keys)} ({current.__class__}) is not {typ}"
                 )
-            return cast(T, current)
-        return current
+            return current.unwrap() if hasattr(current, "unwrap") else current # type: ignore
+        return current.unwrap() if hasattr(current, "unwrap") else current
 
     @staticmethod
     def _merge(default, user):
