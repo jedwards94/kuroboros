@@ -33,12 +33,14 @@ class GroupVersionInfo:
         Validates if the given API version string matches the expected format.
         """
         return re.match(GroupVersionInfo.__VERSION_PATTERN, api_version) is not None
-    
-    
+
     def is_namespaced(self):
+        """
+        Returns `True` if the GVI is scoped `Namespaced`
+        """
         return self.scope == "Namespaced"
 
-    def pretty_kind_str(self, namespace_name: NamespaceName | None = None) -> str:
+    def pkind(self, namespace_name: NamespaceName | None = None) -> str:
         """
         Return a string to represent the CRD as `MyCRDV1Stable` or
         `MyCRD(Namespace="string", Name="string")` if available
@@ -46,10 +48,10 @@ class GroupVersionInfo:
         if namespace_name is not None and namespace_name != (None, None):
             ns = namespace_name[0]
             n = namespace_name[1]
-            return f"{self.kind}{self.pretty_version_str()}(Namespace={ns}, Name={n})"
-        return f"{self.kind}{self.pretty_version_str()}"
+            return f"{self.kind}{self.pversion()}(Namespace={ns}, Name={n})"
+        return f"{self.kind}{self.pversion()}"
 
-    def pretty_version_str(self) -> str:
+    def pversion(self) -> str:
         """
         Get a pretty version string as `V1Stable`
         """
@@ -59,12 +61,19 @@ class GroupVersionInfo:
 
         return f"V{major}{stability}{minor}"
 
-    def __init__(self, api_version: str, group: str, kind: str, scope: str = "Namespaced", **kwargs):
+    def __init__(
+        self,
+        api_version: str,
+        group: str,
+        kind: str,
+        scope: str = "Namespaced",
+        **kwargs,
+    ):
         inf = inflect.engine()
         self.api_version = api_version
         self.group = group
         self.scope = scope
-        
+
         if self.scope not in ("Namespaced", "Cluster"):
             raise ValueError("scope must be one of `Namespaced` or `CLuster`")
 

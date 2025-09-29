@@ -4,6 +4,7 @@ kuroboros.egg-info
 .DS_Info
 .vscode
 build/
+dist/
 .coverage
 *.pem
 requirements.txt

@@ -6,10 +6,10 @@ from kuroboros.operator import Operator
 from kuroboros.controller import Controller, ControllerConfig, ControllerConfigVersions
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
-from kuroboros.schema import BaseCRD, prop
+from kuroboros.schema import CRDSchema, prop
 
 
-class TestCrd(BaseCRD):
+class TestCrd(CRDSchema):
     test_field = prop(str)
 
 
@@ -52,7 +52,6 @@ class TestOperator(unittest.TestCase):
         self.mock_check_permissions = patcher3.start()
         
     def tearDown(self):
-        # Remove all collectors from the default registry
         collectors = list(prometheus_client.REGISTRY._collector_to_names.keys())
         for collector in collectors:
             try:
@@ -67,7 +66,8 @@ class TestOperator(unittest.TestCase):
         self.assertIsInstance(operator.namespace, str)
         self.assertIsInstance(operator.uid, str)
 
-    def test_add_controller_adds_controller(self):
+    @patch("kubernetes.dynamic.DynamicClient")
+    def test_add_controller_adds_controller(self, _):
         operator = Operator()
         group_version = make_group_version()
         with patch("kuroboros.operator.Gauge"):
@@ -84,7 +84,8 @@ class TestOperator(unittest.TestCase):
                 operator._add_controller("test", group_version, DummyReconciler)
         operator._running = False
 
-    def test_add_duplicate_controller_raises(self):
+    @patch("kubernetes.dynamic.DynamicClient")
+    def test_add_duplicate_controller_raises(self, _):
         operator = Operator()
         group_version = make_group_version()
         with patch("kuroboros.operator.Gauge"):
@@ -97,7 +98,8 @@ class TestOperator(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             operator.start(controllers=[])
 
-    def test_start_twice_raises(self):
+    @patch("kubernetes.dynamic.DynamicClient")
+    def test_start_twice_raises(self, _):
         operator = Operator()
         group_version = make_group_version()
         with patch("kuroboros.operator.Gauge"):
@@ -107,12 +109,12 @@ class TestOperator(unittest.TestCase):
                 operator.start(controllers=controller_configs)
         operator._running = False
 
-    def test_metrics_loop_runs(self):
+    @patch("kubernetes.dynamic.DynamicClient")
+    def test_metrics_loop_runs(self, _):
         operator = Operator()
         group_version = make_group_version()
         with patch.object(operator, "_threads_by_reconciler") as mock_gauge:
             operator._add_controller("test", group_version, DummyReconciler)
-            # Patch the class-level private dict
             with patch("kuroboros.operator.event_aware_sleep", side_effect=Exception("break")):
                 try:
                     operator._metrics()

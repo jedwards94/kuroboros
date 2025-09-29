@@ -1,24 +1,32 @@
 [operator]
 name = "{{ name }}"
 # leader_acquire_interval_seconds = 10
-# pending_remove_interval_seconds = 5
+# cleanup_interval_seconds = 5
 
-## Your SSL Config
+## Webhook Server Options
 # [operator.webhook_server]
 # port = 443
-# cert_path = ""
-# key_path = ""
+# cert_path = "/etc/tls/tls.crt"
+# key_path = "/etc/tls/tls.key"
+# gunicorn_workers = 1
 
 ## Operator Metrics
 # [operator.metrics]
 # interval_seconds = 9
 # port = 8080
 
-## Example configuration to set image in Kustomization and other porcesses
-# [image]
+# [build]
+## Default builder values, you can change this to the ones that suit you
+# [build.builder]
+# binary = "docker"
+# args = ["build", ".", "-t", "$IMG"]
+## Example configuration to set image in Kustomization and build porcess
+# [build.image]
 # registry = "my.registry.io"
 # repository = "kuroboros-operator"
-# tag = "v0.0.1"
+# tag_prefix = "v"
+# tag_suffix = ""
+# tag = "$PYPROJECT_VERSION"
 
 
 ## Generate command related

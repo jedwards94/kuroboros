@@ -1,3 +1,4 @@
+import logging
 import multiprocessing
 import signal
 import sys
@@ -11,10 +12,7 @@ from kubernetes import client, config
 from prometheus_client import Gauge, start_http_server
 
 from kuroboros import logger
-from kuroboros.config import (
-    OPERATOR_NAMESPACE,
-    KuroborosConfig
-)
+from kuroboros.config import OPERATOR_NAMESPACE, KuroborosConfig
 from kuroboros.controller import Controller, ControllerConfig
 from kuroboros.group_version_info import GroupVersionInfo
 from kuroboros.reconciler import BaseReconciler
@@ -35,9 +33,10 @@ class Operator:
     _cert_path: str
     _key_path: str
     _webhook_port: int
+    _gunicorn_workers: int
     _running: bool
     _uid: str
-    _logger = logger.root_logger.getChild(__name__)
+    _logger: logging.Logger
     _is_leader: threading.Event
     _threads_by_reconciler: Gauge
     _python_threads: Gauge
@@ -51,7 +50,7 @@ class Operator:
     _controller_threads: Dict[Controller, Tuple[threading.Thread, threading.Thread]] = (
         {}
     )
-    
+
     name: str
 
     def __init__(self) -> None:
@@ -68,6 +67,9 @@ class Operator:
         )
         self._key_path = KuroborosConfig.get(
             "operator", "webhook_server", "key_path", typ=str
+        )
+        self._gunicorn_workers = KuroborosConfig.get(
+            "operator", "webhook_server", "gunicorn_workers", typ=int
         )
         self._webhook_port = KuroborosConfig.get(
             "operator", "webhook_server", "port", typ=int
@@ -87,7 +89,9 @@ class Operator:
         self._is_leader = threading.Event()
         self._uid = str(uuid.uuid4())
         self._namespace = OPERATOR_NAMESPACE
-        self._logger = self._logger.getChild(caseconverter.pascalcase(self.name))
+        self._logger = logger.root_logger.getChild(__name__).getChild(
+            caseconverter.pascalcase(self.name)
+        )
         self._stop = threading.Event()
         try:
             config.load_kube_config()
@@ -238,7 +242,7 @@ class Operator:
 
         # Add Controllers from controller configs
         for ctrl in controllers:
-            self._logger.info(f"adding {ctrl.name}")
+            self._logger.debug(f"adding {ctrl.name} controller")
             run_version = ctrl.get_run_version()
             if run_version.reconciler is None:
                 raise RuntimeError(
@@ -254,7 +258,7 @@ class Operator:
                     mutation_webhook=run_version.mutation_webhook,
                 )
 
-            except Exception as e:  # pylint: disable=broad-except
+            except RuntimeError as e:
                 self._logger.warning(e)
                 continue
 
@@ -273,6 +277,7 @@ class Operator:
                     key_file=self._key_path,
                     endpoints=webhooks,
                     port=self._webhook_port,
+                    workers=self._gunicorn_workers
                 )
                 self._webhook_server_process = multiprocessing.Process(
                     target=webhook_server.start,
@@ -285,7 +290,7 @@ class Operator:
             self._is_leader.clear()
             leader_election = threading.Thread(
                 target=self._acquire_leader_lease,
-                name=f"{self.name}-leader-election",
+                name=f"{self.name}::LeaderElection",
                 daemon=True,
             )
             self._threads.append(leader_election)
@@ -308,7 +313,7 @@ class Operator:
             self._logger.warning("metrics http server could not be started")
 
         metrics_loop = threading.Thread(
-            target=self._metrics, name=f"{self.name}-metrics", daemon=True
+            target=self._metrics, name=f"{self.name}::Metrics", daemon=True
         )
         metrics_loop.start()
         self._threads.append(metrics_loop)
@@ -316,6 +321,7 @@ class Operator:
 
         # handle stop
         signal.signal(signal.SIGINT, self.signal_stop)
+        signal.signal(signal.SIGTERM, self.signal_stop)
 
         # handle crash
         while self._running:
