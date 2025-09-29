@@ -33,8 +33,9 @@ spec:
             cpu: 10m
             memory: 128Mi
         volumeMounts:
-        - mountPath: /home/app/operator/operator.conf
+        - mountPath: /home/app/operator/operator.toml
           name: config-volume
+          subPath: operator.toml
       securityContext:
         runAsNonRoot: true
       serviceAccount: operator-sa
