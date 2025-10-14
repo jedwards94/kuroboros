@@ -24,7 +24,10 @@ required: []
     type: {{ prop.subtype }}
     {%- if prop.subtype == "object" %}
     {{- get_required(prop.subtype_props) | indent(4) }}
-    {%- if prop.subtype_desc is not none %}
+    {%- if prop.subtype_desc is string and '\n' in prop.subtype_desc %}
+    description: |-
+      {{ prop.subtype_desc | indent(6) }}
+    {%- else %}
     description: {{ prop.subtype_desc | yaml }}
     {%- endif %}
     properties:

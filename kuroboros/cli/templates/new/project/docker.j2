@@ -11,8 +11,9 @@ RUN addgroup --gid 1001 app && \
 
 WORKDIR /home/app/operator
 RUN chown -R app:app /home/app
+ADD pyproject.toml .
+RUN pip install .
 ADD . .
-RUN pip install -r requirements.txt
 WORKDIR /home/app/operator
 USER 1001
 
