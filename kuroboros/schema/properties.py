@@ -115,7 +115,7 @@ def prop(
                 ).items():
                     subprops[getattr(subtyp, "attribute_map")[attr]] = (
                         getattr(subtyp, attr)
-                        if isclass(attr_type)
+                        if isclass(attr_type) or get_origin(attr_type) is list
                         else parse_kube_prop(attr, attr_type)
                     )
 
